@@ -1,9 +1,27 @@
+# Dependencies
 node_modules/
+**/node_modules/
+
+# Production builds
+dist/
+**/dist/
+.output/
+
+# Environment files
 .env
 .env.*
 !.env.example
+*.local
+
+# Test & coverage
 coverage/
-dist/
+*.log
+
+# System & IDE
 .DS_Store
+.vscode/
+.idea/
+
+# Internal scratch files
 systemDocumentation.txt
 request.rest
