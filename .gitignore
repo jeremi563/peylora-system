@@ -25,3 +25,5 @@ coverage/
 # Internal scratch files
 systemDocumentation.txt
 request.rest
+DEPLOYMENT*
+frontend-instructions.txt

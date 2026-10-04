@@ -56,7 +56,7 @@ export default function AuthPage({ mode }) {
   return (
     <div className="auth-page">
       <aside className="auth-aside">
-        <div className="brand-lockup auth-brand"><span className="brand-mark"><span /></span><span><strong>tandem</strong><small>PAYMENT DESK</small></span></div>
+        <div className="brand-lockup auth-brand"><span className="brand-mark"><span /></span><span><strong>peyflow</strong><small>MERCHANT WORKSPACE</small></span></div>
         <div className="auth-aside-copy"><span className="eyebrow">MPESA · MERCHANT TOOLS</span><h1>Clear payments.<br /><em>Calmer business.</em></h1><p>Manage payment requests, follow transactions, and keep your records in one place.</p></div>
         <div className="auth-aside-foot"><span className="status-pulse" /> Connected to Safaricom sandbox</div>
         <div className="auth-lines" aria-hidden="true"><span /><span /><span /><span /></div>
@@ -65,7 +65,7 @@ export default function AuthPage({ mode }) {
         <div className="auth-form-wrap">
           <span className="eyebrow">MERCHANT WORKSPACE</span>
           <h2>{isRegister ? "Create your account" : "Welcome back"}</h2>
-          <p className="auth-subtitle">{isRegister ? "Set up your business workspace to get started." : "Sign in to your payment desk."}</p>
+          <p className="auth-subtitle">{isRegister ? "Set up your business workspace to get started." : "Sign in to your merchant workspace."}</p>
           <ErrorNotice message={error} />
           <SuccessNotice message={success} />
           <form className="auth-form" onSubmit={submit}>
@@ -83,7 +83,7 @@ export default function AuthPage({ mode }) {
             }}>Forgot password?</button></div>}
             <button className="button button-primary auth-submit" disabled={busy} type="submit">{busy ? "Please wait…" : isRegister ? "Create account" : "Sign in"}<ArrowRight size={17} /></button>
           </form>
-          <div className="auth-switch">{isRegister ? "Already have an account?" : "New to tandem?"} <Link to={isRegister ? "/login" : "/register"}>{isRegister ? "Sign in" : "Create account"}</Link></div>
+          <div className="auth-switch">{isRegister ? "Already have an account?" : "New to peyflow?"} <Link to={isRegister ? "/login" : "/register"}>{isRegister ? "Sign in" : "Create account"}</Link></div>
           <div className="auth-legal">By continuing, you agree to use this application in accordance with your organization’s policies.</div>
         </div>
       </main>

@@ -57,14 +57,14 @@ export default function PublicPaymentPage() {
   }
 
   if (loading) return <div className="public-loading"><LoadingState label="Loading payment details" /></div>;
-  if (!link) return <div className="public-loading"><section className="public-card"><span className="public-brand">tandem <i>PAY</i></span><div className="public-state-icon state-failed"><TriangleAlert size={25} /></div><h1>Payment link unavailable</h1><p>{error || "This link may have expired or been deactivated."}</p></section></div>;
+  if (!link) return <div className="public-loading"><section className="public-card"><span className="public-brand">peyflow <i>PAY</i></span><div className="public-state-icon state-failed"><TriangleAlert size={25} /></div><h1>Payment link unavailable</h1><p>{error || "This link may have expired or been deactivated."}</p></section></div>;
 
   const successful = payment?.status === "SUCCESS";
   const failed = payment && ["FAILED", "CANCELLED", "TIMEOUT"].includes(payment.status);
 
   return (
     <div className="public-payment-page">
-      <div className="public-topline"><span className="public-brand">tandem <i>PAY</i></span><span><LockKeyhole size={13} /> Secure M-Pesa checkout</span></div>
+      <div className="public-topline"><span className="public-brand">peyflow <i>PAY</i></span><span><LockKeyhole size={13} /> Secure M-Pesa checkout</span></div>
       <main className="public-card">
         <span className="public-business">{link.businessName}</span>
         <p className="public-description">{link.description}</p>

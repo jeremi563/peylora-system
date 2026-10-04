@@ -12,6 +12,8 @@ import {
   Menu,
   ReceiptText,
   Settings,
+  ShieldCheck,
+  Users,
   X
 } from "lucide-react";
 
@@ -21,18 +23,28 @@ import { useAuth } from "../state/auth.jsx";
 const navigation = [
   { label: "Overview", to: "/", icon: LayoutDashboard, end: true },
   { label: "Payments", to: "/payments", icon: ReceiptText },
+  { label: "Transactions", to: "/transactions", icon: Activity },
   { label: "Invoices", to: "/invoices", icon: FileText },
   { label: "Payment links", to: "/payment-links", icon: Link2 },
-  { label: "Analytics", to: "/analytics", icon: Activity }
+  { label: "Customers", to: "/customers", icon: Users },
+  { label: "Analytics", to: "/analytics", icon: Activity },
+  { label: "Notifications", to: "/notifications", icon: Bell }
 ];
 
 const pageNames = {
   "/": "Overview",
   "/payments": "Payments",
+  "/transactions": "Transactions",
   "/invoices": "Invoices",
   "/payment-links": "Payment links",
+  "/customers": "Customers",
   "/analytics": "Analytics",
-  "/settings": "Settings"
+  "/notifications": "Notifications",
+  "/subscription": "Subscription",
+  "/settings": "Settings",
+  "/admin": "Admin",
+  "/swagger": "API docs",
+  "/developers": "Developer portal"
 };
 
 function NotificationMenu() {
@@ -100,6 +112,7 @@ export default function AppShell() {
   const [apiHealthy, setApiHealthy] = useState(true);
   const title = pageNames[location.pathname] || "Merchant workspace";
   const initials = (user?.name || user?.email || "M").split(/[\s@]/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join("");
+  const adminNavigation = user?.role === "ADMIN" ? [{ label: "Admin", to: "/admin", icon: ShieldCheck }] : [];
 
   useEffect(() => {
     let active = true;
@@ -118,21 +131,23 @@ export default function AppShell() {
     <aside className="sidebar">
       <div className="brand-lockup">
         <span className="brand-mark"><span /></span>
-        <span><strong>tandem</strong><small>PAYMENT DESK</small></span>
+        <span><strong>peyflow</strong><small>MERCHANT WORKSPACE</small></span>
       </div>
       <div className="workspace-label">WORKSPACE <ChevronDown size={13} /></div>
       <div className="workspace-name"><span className="workspace-avatar">{initials || "M"}</span><span><strong>{user?.name || "Merchant account"}</strong><small>Merchant workspace</small></span></div>
       <nav className="primary-nav" aria-label="Main navigation">
         <span className="nav-caption">MANAGE</span>
-        {navigation.map(({ label, to, icon: Icon, end }) => (
+        {[...navigation, ...adminNavigation].map(({ label, to, icon: Icon, end }) => (
           <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} end={end} key={to} to={to}>
             <Icon size={17} strokeWidth={1.8} /><span>{label}</span>
           </NavLink>
         ))}
       </nav>
       <div className="sidebar-bottom">
+        <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} to="/subscription"><ReceiptText size={17} /><span>Subscription</span></NavLink>
+        <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} to="/developers"><CircleHelp size={17} /><span>Developer</span></NavLink>
+        <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} to="/swagger"><Activity size={17} /><span>API docs</span></NavLink>
         <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} to="/settings"><Settings size={17} /><span>Settings</span></NavLink>
-        <a className="nav-item" href="mailto:support@example.com"><CircleHelp size={17} /><span>Help & support</span></a>
         <div className="sandbox-status"><span className="status-pulse" /><span><strong>Sandbox mode</strong><small>Daraja test environment</small></span></div>
       </div>
     </aside>
@@ -163,7 +178,7 @@ export default function AppShell() {
           </div>
         </header>
         <main className="page-content"><Outlet /></main>
-        <footer className="app-footer"><span>tandem payment desk</span><span>Daraja sandbox · KES</span></footer>
+        <footer className="app-footer"><span>peyflow</span><span>Daraja sandbox · KES</span></footer>
       </div>
     </div>
   );

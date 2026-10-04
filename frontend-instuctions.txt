@@ -1,0 +1,987 @@
+You are the senior frontend engineer and UI/UX designer responsible for building the complete frontend of this project.
+
+Your task is to inspect the existing repository, understand the backend/API architecture and existing functionality, and then build a polished, production-quality frontend for the payment management platform.
+
+IMPORTANT: Do not treat this as a generic dashboard template. The final product should look like a real software company built it, with a carefully designed visual identity, consistent spacing, typography, navigation, responsive behavior, and professional UX.
+
+## 1. PRODUCT CONTEXT
+
+This is a web-based payment management SaaS platform built around M-Pesa payments.
+
+The platform allows businesses/merchants to:
+
+- Manage their payment activity
+- Initiate M-Pesa STK Push payments
+- Track payment status
+- View transactions
+- Create payment requests
+- Create and manage payment links
+- Create invoices
+- View payment analytics
+- Manage customers
+- Manage notifications
+- Manage their account and subscription
+- View system activity and audit information where permitted
+
+The backend already contains payment-processing functionality and M-Pesa integration.
+
+Do NOT replace, duplicate, or bypass existing backend functionality.
+
+The frontend must consume the existing REST API through a clean API/service layer.
+
+Before writing significant frontend code:
+
+1. Inspect the repository.
+2. Understand the existing backend routes and API contracts.
+3. Inspect existing frontend files if they exist.
+4. Identify the existing authentication flow.
+5. Identify payment, transaction, customer, invoice, payment-link, subscription, notification, and dashboard endpoints.
+6. Reuse existing functionality rather than creating fake implementations.
+7. Do not invent API endpoints when an existing endpoint can be used.
+8. If an API endpoint required by the UI does not exist, clearly identify it instead of silently creating fake data.
+
+## 2. TECHNOLOGY REQUIREMENTS
+
+Use:
+
+- React
+- Vite
+- Vanilla JavaScript
+- Vanilla CSS
+- React Router
+- Fetch or the existing HTTP client used by the project
+- Reusable React components
+- CSS variables/design tokens
+- Responsive CSS
+
+Do NOT introduce Tailwind CSS unless the project already uses it.
+
+Do NOT introduce a UI component library unless absolutely necessary.
+
+The purpose is to demonstrate strong frontend engineering and CSS skills.
+
+Keep the code:
+
+- Clean
+- Maintainable
+- Modular
+- Reusable
+- Accessible
+- Responsive
+- Scalable
+- Easy for another developer to understand
+
+Avoid unnecessary abstraction.
+
+## 3. VISUAL DESIGN DIRECTION
+
+Use the Safaricom Daraja Developer Portal as visual inspiration:
+
+https://developer.safaricom.co.ke/
+
+Study its:
+
+- Green and white visual language
+- Clean navigation
+- Typography hierarchy
+- Generous whitespace
+- Card structure
+- Professional developer-oriented layout
+- Documentation organization
+- Search experience
+- Section spacing
+- Button hierarchy
+- Information density
+- Clean content presentation
+
+However:
+
+DO NOT COPY Safaricom's branding.
+
+DO NOT copy their logo.
+
+DO NOT copy their exact layouts.
+
+DO NOT copy their images.
+
+DO NOT copy their text.
+
+DO NOT make the application look like Safaricom.
+
+Instead, create an ORIGINAL payment-management SaaS identity inspired by the same principles.
+
+The interface should feel:
+
+- Professional
+- Modern
+- Trustworthy
+- Financial
+- Technical
+- Minimal
+- Enterprise-ready
+- Kenyan/African fintech appropriate
+- Human-designed
+
+The dominant visual language should be:
+
+WHITE + DEEP GREEN + DARK TEXT + SUBTLE NEUTRAL COLORS.
+
+Use green primarily for:
+
+- Primary actions
+- Active navigation
+- Success states
+- Important highlights
+- Selected elements
+
+Avoid excessive green.
+
+Use neutral backgrounds and borders to create hierarchy.
+
+## 4. ABSOLUTELY NO AI-GENERATED VISUAL STYLE
+
+This requirement is extremely important.
+
+The interface must NOT contain visual patterns commonly associated with AI-generated websites.
+
+DO NOT use:
+
+- Emojis
+- Excessive rounded cards
+- Excessive pill-shaped elements
+- Gradients
+- Glowing effects
+- Neon colors
+- Glassmorphism
+- Excessive shadows
+- Huge hero headings
+- Random decorative shapes
+- Floating blobs
+- Artificial-looking illustrations
+- Generic AI dashboard aesthetics
+- Excessive icons
+- Cartoon illustrations
+- Random statistics with fake values
+- Fake testimonials
+- Fake customer logos
+- Unnecessary animations
+- Overly colorful charts
+- Decorative elements with no functional purpose
+
+Do not use emoji characters anywhere in the UI.
+
+Use professional SVG icons only where an icon improves usability.
+
+Prefer simple line icons.
+
+Do not use icons merely for decoration.
+
+## 5. BRANDING
+
+Use the finalized application name already established in the project.
+
+Do not introduce alternative product names.
+
+Create a simple professional wordmark/text-based logo if an actual logo asset does not exist.
+
+The brand should feel like a serious fintech software company.
+
+Do not make the branding look like a student project.
+
+## 6. DESIGN SYSTEM
+
+Create a small centralized design system using CSS variables.
+
+Define variables for:
+
+- Primary green
+- Dark green
+- Text colors
+- Muted text
+- Page background
+- Surface background
+- Border colors
+- Success
+- Warning
+- Error
+- Information
+- Border radius
+- Shadows
+- Spacing
+- Typography sizes
+
+Keep the design system consistent across the entire application.
+
+Do not use arbitrary colors repeatedly throughout individual components.
+
+Use consistent:
+
+- Button heights
+- Input heights
+- Border radii
+- Card padding
+- Section spacing
+- Table spacing
+- Typography hierarchy
+
+The UI should feel like one coherent product.
+
+## 7. APPLICATION STRUCTURE
+
+Build a professional application shell containing:
+
+### Public website
+
+Create:
+
+- Landing page
+- Features
+- How it works
+- Pricing
+- API/Developer section
+- Documentation
+- Login
+- Registration
+
+The landing page should be restrained and professional.
+
+Do not create a marketing page filled with exaggerated claims.
+
+The primary message should communicate:
+
+Payment management for modern businesses.
+
+Focus on:
+
+- M-Pesa payment collection
+- Payment tracking
+- Invoices
+- Payment links
+- Transaction visibility
+- Reporting
+- Developer/API integration
+
+## 8. AUTHENTICATION UI
+
+Create:
+
+- Login
+- Registration
+- Forgot password
+- Reset password
+- Email verification
+- Account activation/deactivation states where applicable
+
+Authentication pages should be clean and minimal.
+
+Use proper:
+
+- Form validation
+- Loading states
+- Error states
+- Success states
+- Disabled states
+
+Never expose sensitive backend information.
+
+## 9. MERCHANT DASHBOARD
+
+Create a professional merchant dashboard.
+
+The dashboard should include:
+
+- Total collected
+- Successful payments
+- Pending payments
+- Failed payments
+- Transaction count
+- Recent transactions
+- Revenue/activity trends
+- Payment method information where available
+- Recent payment requests
+- Quick actions
+
+Possible quick actions:
+
+- Request Payment
+- Create Payment Link
+- Create Invoice
+- View Transactions
+
+Do not invent statistics.
+
+If the API does not provide a metric, display an appropriate empty state rather than fake numbers.
+
+## 10. TRANSACTION MANAGEMENT
+
+Create a complete transaction page.
+
+Features:
+
+- Transaction table
+- Search
+- Filtering
+- Sorting
+- Pagination
+- Status filtering
+- Date filtering
+- Amount information
+- M-Pesa receipt number
+- Checkout Request ID
+- Merchant Request ID
+- Phone number
+- Transaction date
+- Payment reference
+
+Create a professional transaction details page/drawer.
+
+Statuses should have clear visual treatment:
+
+SUCCESS
+PENDING
+FAILED
+CANCELLED
+TIMEOUT
+
+Do not rely only on color to communicate status.
+
+## 11. PAYMENT REQUEST UI
+
+Create a professional payment-request workflow.
+
+The merchant should be able to enter:
+
+- Amount
+- Customer phone number
+- Customer information where supported
+- Account/reference
+- Description
+
+Validate input before sending requests.
+
+Show clear states:
+
+1. Form
+2. Request submitted
+3. Waiting for payment
+4. Payment successful
+5. Payment failed
+6. Payment cancelled
+7. Payment timed out
+
+The UI must clearly communicate that M-Pesa payment processing is asynchronous.
+
+Do not tell the user that a payment is successful merely because the STK request was accepted.
+
+The final payment state must come from the backend/payment status.
+
+## 12. PAYMENT LINKS
+
+Create:
+
+- Payment link list
+- Create payment link
+- Edit payment link where supported
+- Payment link details
+- Active/inactive state
+- Copy link functionality
+- Payment link statistics where supported
+
+Create a clean customer-facing payment-link page.
+
+The customer should be able to:
+
+- View payment information
+- Enter/confirm phone number where required
+- Initiate payment
+- See payment status
+- Understand whether payment succeeded or failed
+
+## 13. INVOICES
+
+Create:
+
+- Invoice list
+- Create invoice
+- Invoice details
+- Invoice items
+- Customer information
+- Amount totals
+- Status
+- Due date
+- Payment status
+- Payment action
+
+Where backend support exists, provide:
+
+- Download/print invoice
+- Share invoice
+- Payment link
+
+Use professional invoice styling.
+
+## 14. CUSTOMER MANAGEMENT
+
+Create:
+
+- Customer list
+- Customer details
+- Customer payment history
+- Customer invoices
+- Customer payment links where applicable
+- Search
+- Filtering
+
+Do not expose information that the backend does not authorize the current user to access.
+
+## 15. ANALYTICS
+
+Create an analytics page.
+
+Use charts only where the backend provides meaningful data.
+
+Possible analytics:
+
+- Revenue over time
+- Successful vs failed payments
+- Transaction volume
+- Average transaction value
+- Payment status distribution
+
+Charts must be simple and professional.
+
+Do not create colorful dashboards.
+
+Avoid visual clutter.
+
+If there is insufficient data, provide a meaningful empty state.
+
+## 16. NOTIFICATIONS
+
+Create an in-app notification interface.
+
+Support:
+
+- Unread count
+- Read/unread state
+- Notification list
+- Notification details where needed
+- Appropriate notification categories
+
+Do not use browser alerts for normal application interactions.
+
+Use proper toast notifications sparingly.
+
+## 17. SETTINGS
+
+Create a settings area containing appropriate sections such as:
+
+- Profile
+- Business information
+- Payment configuration
+- Security
+- Password
+- Notifications
+- Subscription
+- API configuration where permitted
+- Account settings
+
+Never display secret credentials such as:
+
+- M-Pesa consumer secret
+- Passkeys
+- Access tokens
+- Refresh tokens
+
+## 18. SUBSCRIPTION / BILLING
+
+Create a professional subscription section.
+
+Show:
+
+- Current plan
+- Plan status
+- Billing information
+- Usage information if available
+- Available plans
+- Upgrade/downgrade actions where supported
+
+Do not implement fake subscription payments.
+
+Only connect UI actions to real backend functionality.
+
+## 19. ADMIN INTERFACE
+
+If the backend supports an ADMIN role, create a separate administrative interface.
+
+Include appropriate:
+
+- User management
+- Merchant management
+- Subscription management
+- Transaction monitoring
+- System activity
+- Audit logs
+- Webhook events
+- System health
+
+Admin functionality must be protected by authorization.
+
+Do not expose admin navigation to unauthorized users.
+
+## 20. API / DEVELOPER PORTAL
+
+This is an important part of the project.
+
+Create a professional developer section inspired by the structure of the Safaricom Daraja developer portal.
+
+Include:
+
+- API overview
+- Getting started
+- Authentication
+- Payment API
+- Payment status
+- Payment links
+- Webhooks
+- Error handling
+- API reference
+- Code examples where appropriate
+
+The developer experience should feel like a real API platform.
+
+Create a documentation sidebar.
+
+Include:
+
+- Search documentation
+- Table of contents
+- Code blocks
+- HTTP method badges
+- Endpoint information
+- Request parameters
+- Headers
+- Request examples
+- Response examples
+- Error responses
+- Authentication information
+
+## 21. SWAGGER / OPENAPI DOCUMENTATION
+
+The project already has or will have Swagger/OpenAPI documentation on the backend.
+
+DO NOT build a fake Swagger page.
+
+Integrate the actual backend Swagger/OpenAPI documentation.
+
+If Swagger UI is already exposed by the backend, create a professional documentation entry/page that links to or embeds the real Swagger UI appropriately.
+
+If the backend exposes an OpenAPI JSON specification, use that specification.
+
+Do not duplicate the API specification manually in React.
+
+The frontend developer portal and Swagger documentation should feel like parts of the same product.
+
+Provide an obvious navigation path such as:
+
+Developer
+→ Documentation
+→ API Reference
+→ Swagger / OpenAPI
+
+If embedding Swagger UI causes styling conflicts, isolate it properly rather than modifying the actual API specification.
+
+## 22. RESPONSIVE DESIGN
+
+The application must work properly on:
+
+- Desktop
+- Laptop
+- Tablet
+- Mobile
+
+Do not simply shrink the desktop UI.
+
+Adapt:
+
+- Navigation
+- Tables
+- Forms
+- Cards
+- Sidebar
+- Modals
+- Charts
+- Documentation layout
+
+For mobile transaction tables, provide an appropriate responsive representation rather than allowing the entire page to overflow horizontally.
+
+## 23. ACCESSIBILITY
+
+Follow good accessibility practices.
+
+Use:
+
+- Semantic HTML
+- Proper labels
+- Keyboard navigation
+- Visible focus states
+- Appropriate contrast
+- ARIA only when necessary
+- Accessible forms
+- Accessible buttons
+- Meaningful error messages
+
+Do not rely exclusively on color.
+
+## 24. LOADING, ERROR AND EMPTY STATES
+
+Every major data-driven page must handle:
+
+- Loading
+- Success
+- Empty
+- Error
+
+Do not leave blank white screens.
+
+Create professional loading states.
+
+Do not overuse skeleton loaders where a simple loading indicator is more appropriate.
+
+Empty states should explain what the user can do next.
+
+Error states should provide useful information without exposing stack traces or sensitive backend errors.
+
+## 25. API ARCHITECTURE
+
+Create a clean frontend API layer.
+
+Do not place raw API calls throughout components.
+
+Prefer a structure similar to:
+
+src/
+├── api/
+├── components/
+├── layouts/
+├── pages/
+├── hooks/
+├── context/
+├── services/
+├── utils/
+├── styles/
+└── router/
+
+Centralize:
+
+- API base URL
+- Authentication handling
+- Request configuration
+- Error normalization
+- Token handling
+- API services
+
+Use reusable services such as:
+
+- authService
+- paymentService
+- transactionService
+- customerService
+- invoiceService
+- paymentLinkService
+- notificationService
+- subscriptionService
+- analyticsService
+
+Only create services that correspond to actual backend functionality.
+
+## 26. AUTHENTICATION STATE
+
+Implement authentication cleanly.
+
+The frontend should understand:
+
+- Authenticated user
+- User role
+- Session state
+- Token expiration
+- Logout
+- Unauthorized responses
+
+Protect private routes.
+
+Implement role-aware navigation.
+
+Do not put secrets in frontend environment variables.
+
+Remember that Vite environment variables exposed to the browser are NOT secret.
+
+## 27. ROUTING
+
+Use React Router.
+
+Create a clean route hierarchy.
+
+Example:
+
+/ 
+/login
+/register
+/forgot-password
+/reset-password
+
+/dashboard
+/payments
+/payments/:id
+/transactions
+/transactions/:id
+/payment-links
+/payment-links/:id
+/invoices
+/invoices/:id
+/customers
+/customers/:id
+/analytics
+/notifications
+/settings
+/subscription
+
+/developers
+/docs
+/docs/getting-started
+/docs/authentication
+/docs/payments
+/docs/webhooks
+/docs/api-reference
+/swagger
+
+/admin/...
+
+Adjust these routes according to the actual backend and existing project structure.
+
+## 28. NAVIGATION
+
+Create a professional application navigation system.
+
+Desktop:
+
+- Logo
+- Primary navigation
+- Developer/documentation access
+- Notifications
+- User/account menu
+
+Dashboard:
+
+- Overview
+- Payments
+- Transactions
+- Payment Links
+- Invoices
+- Customers
+- Analytics
+- Notifications
+- Settings
+
+Admin users should see appropriate additional navigation.
+
+Avoid overcrowding the sidebar.
+
+Use collapsible navigation where useful.
+
+## 29. MICRO-INTERACTIONS
+
+Use subtle transitions only where they improve usability.
+
+Examples:
+
+- Button hover
+- Navigation transitions
+- Modal appearance
+- Dropdown opening
+- Status updates
+- Toast appearance
+
+Keep animations fast and restrained.
+
+No flashy animations.
+
+No animated gradients.
+
+No unnecessary motion.
+
+## 30. SECURITY
+
+Never expose:
+
+- API secrets
+- M-Pesa credentials
+- Consumer secrets
+- Passkeys
+- Access tokens
+- Refresh tokens
+- Internal server configuration
+
+Do not log sensitive authentication data to the browser console.
+
+Do not place secrets in source code.
+
+Do not bypass backend authorization.
+
+The frontend is NOT the security boundary.
+
+## 31. DATA INTEGRITY
+
+Do not create fake backend data simply to make the interface look complete.
+
+Do not use:
+
+- Hardcoded fake transaction records
+- Fake revenue figures
+- Fake users
+- Fake payment receipts
+- Fake API responses
+
+If backend data is unavailable, implement proper empty states or mock data only in a clearly isolated development environment.
+
+Production UI must use real API data.
+
+## 32. CODE QUALITY
+
+Before finishing:
+
+- Remove unused imports
+- Remove unused components
+- Remove console.log statements
+- Remove dead CSS
+- Remove duplicated styles
+- Remove placeholder content
+- Remove fake data
+- Fix React warnings
+- Fix accessibility warnings
+- Fix broken routes
+- Fix console errors
+- Ensure responsive behavior
+- Ensure loading/error states work
+
+Do not leave TODO comments for functionality that you can implement.
+
+## 33. PERFORMANCE
+
+Avoid unnecessary:
+
+- Re-renders
+- API calls
+- Large dependencies
+- Duplicate requests
+- Huge images
+- Unnecessary state
+
+Use appropriate React patterns without over-engineering.
+
+## 34. FINAL QUALITY STANDARD
+
+The finished frontend should look like a serious commercial fintech product.
+
+When someone opens the application, they should immediately feel:
+
+"This is a real payment platform."
+
+It should NOT feel like:
+
+- A coding tutorial
+- A student CRUD project
+- A generic admin dashboard
+- An AI-generated website
+- A Bootstrap template
+- A Tailwind template
+- A copied Safaricom website
+
+The design should be restrained, intentional and professional.
+
+Think:
+
+"Modern Kenyan fintech + developer platform + enterprise SaaS."
+
+## 35. DEVELOPMENT PROCESS
+
+Do not generate the entire frontend blindly in one pass.
+
+Work systematically.
+
+First:
+
+1. Inspect the repository.
+2. Inspect the backend API.
+3. Inspect existing frontend code.
+4. Identify the existing API contracts.
+5. Identify missing frontend requirements.
+6. Propose the frontend architecture.
+7. Establish the design system.
+8. Establish routing.
+9. Establish the application shell.
+10. Then implement the pages incrementally.
+
+After each major section:
+
+- Run the project
+- Check for errors
+- Check the browser console
+- Check responsive behavior
+- Fix issues before moving forward
+
+Do not destroy working backend functionality.
+
+Do not rewrite backend code unless a frontend requirement genuinely requires a backend change.
+
+If a backend change is required, explain exactly why before making it.
+
+## 36. IMPORTANT IMPLEMENTATION RULE
+
+Prioritize REAL functionality over visual placeholders.
+
+Every button should either:
+
+- Perform a real action
+- Navigate somewhere meaningful
+- Open a real dialog
+- Trigger a real API request
+- Or be intentionally disabled with a clear reason
+
+Do not create decorative buttons that do nothing.
+
+The final application should be fully connected to the existing backend wherever functionality already exists.
+
+## 37. FINAL DELIVERABLE
+
+At completion, provide:
+
+1. Summary of the frontend architecture.
+2. List of implemented pages.
+3. List of implemented components.
+4. API services created.
+5. Authentication approach.
+6. Routing structure.
+7. Design system summary.
+8. Swagger/OpenAPI integration approach.
+9. Responsive design approach.
+10. Any backend endpoints that are still missing.
+11. Any frontend features that cannot yet be implemented because backend support is missing.
+12. Instructions for running the frontend locally.
+
+Most importantly:
+
+BUILD A REAL, PROFESSIONAL PRODUCT.
+
+Do not optimize for generating the largest amount of code.
+
+Optimize for:
+
+QUALITY
+CONSISTENCY
+USABILITY
+MAINTAINABILITY
+SECURITY
+RESPONSIVENESS
+REAL API INTEGRATION
+PROFESSIONAL UI/UX
