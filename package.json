@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "start:all": "node src/start-services.js",
     "db:migrate": "node src/scripts/migrate.js",
     "worker:notifications": "node src/workers/notification.worker.js",
     "worker:webhooks": "node src/workers/webhook.worker.js",
