@@ -62,8 +62,8 @@ export default function LandingPage() {
             <span className="eyebrow landing-eyebrow">PAYMENT MANAGEMENT FOR MODERN BUSINESSES</span>
             <h1>Collect, track, and reconcile M-Pesa payments with clarity.</h1>
             <p>
-              Built for merchants who need a dependable payment workflow, streamlined customer payment links,
-              and a clean transaction record from initiation to settlement.
+              Peyflow brings M-Pesa collections, payment links, invoices, and transaction reporting into one workspace,
+              helping your team follow each payment from request through reconciliation.
             </p>
             <div className="landing-cta-row">
               <Link className="button button-primary" to="/register">Create account</Link>
