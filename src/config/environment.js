@@ -4,8 +4,12 @@ export function validateEnvironment() {
         throw new Error("AUTH_JWT_SECRET must be configured with at least 32 characters");
     }
 
-    if (process.env.NODE_ENV === "production" && !process.env.SMTP_HOST) {
-        throw new Error("SMTP_HOST must be configured in production to deliver authentication emails");
+    if (process.env.NODE_ENV === "production" && !process.env.BREVO_API_KEY) {
+        throw new Error("BREVO_API_KEY must be configured in production to deliver email");
+    }
+
+    if (process.env.NODE_ENV === "production" && !process.env.EMAIL_FROM) {
+        throw new Error("EMAIL_FROM must be configured in production to deliver email");
     }
 
     if (process.env.NODE_ENV === "production" && !process.env.CORS_ORIGINS) {

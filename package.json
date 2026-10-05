@@ -9,7 +9,7 @@
     "db:migrate": "node src/scripts/migrate.js",
     "worker:notifications": "node src/workers/notification.worker.js",
     "worker:webhooks": "node src/workers/webhook.worker.js",
-    "test:unit": "node --test test/*.schemas.test.js test/mpesa.service.test.js",
+    "test:unit": "node --test test/*.schemas.test.js test/mpesa.service.test.js test/email.service.test.js",
     "test:security": "node --test test/security.middleware.test.js",
     "test:integration": "node --test test/*.integration.test.js",
     "test": "npm run test:unit && npm run test:security && npm run test:integration",

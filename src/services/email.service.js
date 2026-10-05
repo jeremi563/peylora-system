@@ -1,24 +1,24 @@
-import nodemailer from "nodemailer";
+import axios from "axios";
 
-let transporter;
+const BREVO_EMAIL_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 
 function escapeHtml(value) {
-        return String(value ?? "").replace(/[&<>"']/g, (character) => ({
-                "&": "&amp;",
-                "<": "&lt;",
-                ">": "&gt;",
-                '"': "&quot;",
-                "'": "&#39;"
-        })[character]);
+    return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[character]);
 }
 
 function createEmailHtml({ heading, message, actionLabel, actionUrl }) {
-        const safeMessage = escapeHtml(message).replace(/\r?\n/g, "<br>");
-        const action = actionLabel && actionUrl
-                ? `<p style="margin:28px 0;text-align:center;"><a href="${escapeHtml(actionUrl)}" style="display:inline-block;padding:13px 24px;border-radius:6px;background:#176b45;color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:bold;text-decoration:none;">${escapeHtml(actionLabel)}</a></p><p style="margin:0;color:#64776e;font-size:13px;line-height:1.6;">If the button does not work, copy and paste this link into your browser:<br><a href="${escapeHtml(actionUrl)}" style="color:#176b45;word-break:break-all;">${escapeHtml(actionUrl)}</a></p>`
-                : "";
+    const safeMessage = escapeHtml(message).replace(/\r?\n/g, "<br>");
+    const action = actionLabel && actionUrl
+        ? `<p style="margin:28px 0;text-align:center;"><a href="${escapeHtml(actionUrl)}" style="display:inline-block;padding:13px 24px;border-radius:6px;background:#176b45;color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:bold;text-decoration:none;">${escapeHtml(actionLabel)}</a></p><p style="margin:0;color:#64776e;font-size:13px;line-height:1.6;">If the button does not work, copy and paste this link into your browser:<br><a href="${escapeHtml(actionUrl)}" style="color:#176b45;word-break:break-all;">${escapeHtml(actionUrl)}</a></p>`
+        : "";
 
-        return `<!doctype html>
+    return `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f2f7f3;font-family:Arial,Helvetica,sans-serif;color:#20372c;">
@@ -41,63 +41,66 @@ function createEmailHtml({ heading, message, actionLabel, actionUrl }) {
 </html>`;
 }
 
-function getTransporter() {
-    if (!process.env.SMTP_HOST) {
-        return null;
+function getSender() {
+    const configuredSender = process.env.EMAIL_FROM?.trim();
+    if (!configuredSender) {
+        throw new Error("EMAIL_FROM must be configured to send email");
     }
 
-    if (!transporter) {
-        const port = Number(process.env.SMTP_PORT || 587);
-        transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port,
-            secure: port === 465,
-            auth: process.env.SMTP_USER ? {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASSWORD
-            } : undefined
+    const match = configuredSender.match(/^(.*?)\s*<([^<>]+)>$/);
+    if (!match) {
+        return { email: configuredSender, name: "Peyflow" };
+    }
+
+    return {
+        email: match[2].trim(),
+        name: match[1].trim().replace(/^['"]|['"]$/g, "") || "Peyflow"
+    };
+}
+
+async function sendEmail({ to, subject, heading, message, actionLabel, actionUrl, developmentUrl }) {
+    const apiKey = process.env.BREVO_API_KEY?.trim();
+    if (!apiKey) {
+        if (process.env.NODE_ENV === "production") {
+            throw new Error("BREVO_API_KEY is required for email delivery in production");
+        }
+
+        if (developmentUrl) {
+            console.info(`Development email for ${to}: ${developmentUrl}`);
+        } else {
+            console.info(`Development notification email for ${to}: ${subject}\n${message}`);
+        }
+        return;
+    }
+
+    try {
+        await axios.post(BREVO_EMAIL_ENDPOINT, {
+            sender: getSender(),
+            to: [{ email: to }],
+            subject,
+            htmlContent: createEmailHtml({ heading, message, actionLabel, actionUrl })
+        }, {
+            headers: {
+                "api-key": apiKey,
+                "content-type": "application/json",
+                accept: "application/json"
+            },
+            timeout: 10000
         });
+    } catch (error) {
+        const status = error.response?.status;
+        const providerMessage = error.response?.data?.message;
+        const details = typeof providerMessage === "string" ? `: ${providerMessage}` : "";
+        throw new Error(`Brevo email delivery failed${status ? ` (HTTP ${status})` : ""}${details}`);
     }
-
-    return transporter;
 }
 
 async function sendAuthEmail({ to, subject, heading, message, actionLabel, actionUrl, developmentUrl }) {
-    const mailer = getTransporter();
-    if (!mailer) {
-        if (process.env.NODE_ENV === "production") {
-            throw new Error("SMTP_HOST is required for authentication emails in production");
-        }
-
-        console.info(`Development email for ${to}: ${developmentUrl}`);
-        return;
-    }
-
-    await mailer.sendMail({
-        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
-        to,
-        subject,
-            html: createEmailHtml({ heading, message, actionLabel, actionUrl })
-    });
+    await sendEmail({ to, subject, heading, message, actionLabel, actionUrl, developmentUrl });
 }
 
 export async function sendNotificationEmail({ to, subject, text }) {
-    const mailer = getTransporter();
-    if (!mailer) {
-        if (process.env.NODE_ENV === "production") {
-            throw new Error("SMTP_HOST is required for notification email delivery in production");
-        }
-
-        console.info(`Development notification email for ${to}: ${subject}\n${text}`);
-        return;
-    }
-
-    await mailer.sendMail({
-        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
-        to,
-        subject,
-            html: createEmailHtml({ heading: subject, message: text })
-    });
+    await sendEmail({ to, subject, heading: subject, message: text });
 }
 
 function buildAuthUrl(path, token) {

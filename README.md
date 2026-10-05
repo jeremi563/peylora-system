@@ -443,8 +443,10 @@ When the database connection fails, the endpoint returns HTTP 503, instructing R
 | `CORS_ORIGINS` | Comma-delimited list of allowed browser origins | `https://your-frontend.vercel.app` | **Yes** |
 | `TRUST_PROXY_HOPS` | Reverse proxy hop count (Render uses `1`) | `1` | **Yes** |
 | `RATE_LIMIT_REDIS_URL` | Redis URL for distributed rate limiting | `redis://...` | Optional |
-| `SMTP_HOST` | SMTP server for password reset / emails | `smtp.mailtrap.io` | **Yes** |
-| `SMTP_PORT` | SMTP port | `587` | No |
+| `BREVO_API_KEY` | Brevo transactional email API key | Set in Brevo | **Yes** |
+| `EMAIL_FROM` | Verified sender email (optionally `Peyflow <address>`) | `Peyflow <noreply@yourdomain.com>` | **Yes** |
+| `SMTP_HOST` | Legacy SMTP setting retained during migration; not used for email delivery | `smtp.mailtrap.io` | No |
+| `SMTP_PORT` | Legacy SMTP setting retained during migration; not used for email delivery | `587` | No |
 | `ENABLE_API_DOCS` | Expose `/api/docs` in production environment | `true` | No |
 
 ---
