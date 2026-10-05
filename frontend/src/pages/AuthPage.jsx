@@ -22,9 +22,27 @@ export default function AuthPage({ mode }) {
 
   async function submit(event) {
     event.preventDefault();
-    setBusy(true);
     setError("");
     setSuccess("");
+
+    let registrationPhone = "";
+    if (isRegister && form.phoneNumber.trim()) {
+      const enteredPhone = form.phoneNumber.replace(/\s+/g, "");
+      registrationPhone = /^07\d{8}$/.test(enteredPhone)
+        ? `254${enteredPhone.slice(1)}`
+        : enteredPhone;
+
+      if (!/^254[17]\d{8}$/.test(registrationPhone)) {
+        setError("Enter a valid M-Pesa number starting with 254. Numbers starting with 07 are converted automatically.");
+        return;
+      }
+
+      if (registrationPhone !== enteredPhone) {
+        setForm((previous) => ({ ...previous, phoneNumber: registrationPhone }));
+      }
+    }
+
+    setBusy(true);
     try {
       if (isRegister) {
         await apiRequest("/api/auth/register", {
@@ -34,7 +52,7 @@ export default function AuthPage({ mode }) {
             businessName: form.businessName || form.name,
             email: form.email,
             password: form.password,
-            ...(form.phoneNumber ? { phoneNumber: form.phoneNumber } : {})
+            ...(registrationPhone ? { phoneNumber: registrationPhone } : {})
           })
         });
         setSuccess("Account created. Verify your email, then sign in to continue.");
@@ -72,7 +90,7 @@ export default function AuthPage({ mode }) {
             {isRegister && <>
               <label>Full name<span className="input-wrap"><UserRound size={17} /><input autoComplete="name" required value={form.name} onChange={(event) => change("name", event.target.value)} placeholder="Your name" /></span></label>
               <label>Business name <small>Optional</small><span className="input-wrap"><Store size={17} /><input autoComplete="organization" value={form.businessName} onChange={(event) => change("businessName", event.target.value)} placeholder="Business name" /></span></label>
-              <label>M-Pesa phone <small>Optional</small><span className="input-wrap"><span className="phone-prefix">+254</span><input inputMode="numeric" value={form.phoneNumber} onChange={(event) => change("phoneNumber", event.target.value)} placeholder="7XX XXX XXX" /></span></label>
+              <label>M-Pesa phone <small>Optional · enter 254… or 07…</small><span className="input-wrap"><input inputMode="numeric" value={form.phoneNumber} onChange={(event) => change("phoneNumber", event.target.value)} placeholder="2547XXXXXXXX" /></span></label>
             </>}
             <label>Email address<span className="input-wrap"><Mail size={17} /><input type="email" autoComplete="email" required value={form.email} onChange={(event) => change("email", event.target.value)} placeholder="name@business.com" /></span></label>
             <label>Password<span className="input-wrap"><LockKeyhole size={17} /><input type={showPassword ? "text" : "password"} autoComplete={isRegister ? "new-password" : "current-password"} required minLength={isRegister ? 12 : 1} value={form.password} onChange={(event) => change("password", event.target.value)} placeholder={isRegister ? "At least 12 characters" : "Your password"} /><button className="input-action" type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>
