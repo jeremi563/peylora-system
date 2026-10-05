@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowRight, Eye, EyeOff, LockKeyhole, Mail, Store, UserRound } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -14,7 +14,16 @@ export default function AuthPage({ mode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [redirectTimer, setRedirectTimer] = useState(null);
   const [form, setForm] = useState({ name: "", businessName: "", email: "", password: "", phoneNumber: "" });
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimer) {
+        clearTimeout(redirectTimer);
+      }
+    };
+  }, [redirectTimer]);
 
   function change(field, value) {
     setForm((previous) => ({ ...previous, [field]: value }));
@@ -24,6 +33,11 @@ export default function AuthPage({ mode }) {
     event.preventDefault();
     setError("");
     setSuccess("");
+
+    if (redirectTimer) {
+      clearTimeout(redirectTimer);
+      setRedirectTimer(null);
+    }
 
     let registrationPhone = "";
     if (isRegister && form.phoneNumber.trim()) {
@@ -55,7 +69,13 @@ export default function AuthPage({ mode }) {
             ...(registrationPhone ? { phoneNumber: registrationPhone } : {})
           })
         });
-        setSuccess("Account created. Verify your email, then sign in to continue.");
+
+        const timer = setTimeout(() => {
+          navigate("/login", { replace: true });
+        }, 3000);
+
+        setRedirectTimer(timer);
+        setSuccess("Account created. A verification email has been sent. Redirecting to sign in...");
       } else {
         const session = await apiRequest("/api/auth/login", {
           method: "POST",
