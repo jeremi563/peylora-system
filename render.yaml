@@ -8,7 +8,7 @@ services:
     region: oregon
     branch: main
     buildCommand: npm ci && npm run db:migrate
-    startCommand: npm run start:all
+    startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -60,9 +60,3 @@ services:
         value: true
       - key: PUBLIC_APP_URL
         sync: false
-      - key: WEBHOOK_BATCH_SIZE
-        value: 20
-      - key: WEBHOOK_POLL_INTERVAL_MS
-        value: 1000
-      - key: WEBHOOK_LEASE_SECONDS
-        value: 300
