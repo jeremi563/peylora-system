@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ArrowRight, Eye, EyeOff, LockKeyhole, Mail, Store, UserRound } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -14,16 +14,7 @@ export default function AuthPage({ mode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [redirectTimer, setRedirectTimer] = useState(null);
-  const [form, setForm] = useState({ name: "", businessName: "", email: "", password: "", phoneNumber: "" });
-
-  useEffect(() => {
-    return () => {
-      if (redirectTimer) {
-        clearTimeout(redirectTimer);
-      }
-    };
-  }, [redirectTimer]);
+  const [form, setForm] = useState({ name: "", businessName: "", email: "", phoneNumber: "" });
 
   function change(field, value) {
     setForm((previous) => ({ ...previous, [field]: value }));
@@ -33,11 +24,6 @@ export default function AuthPage({ mode }) {
     event.preventDefault();
     setError("");
     setSuccess("");
-
-    if (redirectTimer) {
-      clearTimeout(redirectTimer);
-      setRedirectTimer(null);
-    }
 
     let registrationPhone = "";
     if (isRegister && form.phoneNumber.trim()) {
@@ -65,17 +51,10 @@ export default function AuthPage({ mode }) {
             name: form.name,
             businessName: form.businessName || form.name,
             email: form.email,
-            password: form.password,
             ...(registrationPhone ? { phoneNumber: registrationPhone } : {})
           })
         });
-
-        const timer = setTimeout(() => {
-          navigate("/login", { replace: true });
-        }, 3000);
-
-        setRedirectTimer(timer);
-        setSuccess("Account created. A verification email has been sent. Redirecting to sign in...");
+        navigate(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`, { replace: true });
       } else {
         const session = await apiRequest("/api/auth/login", {
           method: "POST",
@@ -113,7 +92,7 @@ export default function AuthPage({ mode }) {
               <label>M-Pesa phone <small>Optional · enter 254… or 07…</small><span className="input-wrap"><input inputMode="numeric" value={form.phoneNumber} onChange={(event) => change("phoneNumber", event.target.value)} placeholder="2547XXXXXXXX" /></span></label>
             </>}
             <label>Email address<span className="input-wrap"><Mail size={17} /><input type="email" autoComplete="email" required value={form.email} onChange={(event) => change("email", event.target.value)} placeholder="name@business.com" /></span></label>
-            <label>Password<span className="input-wrap"><LockKeyhole size={17} /><input type={showPassword ? "text" : "password"} autoComplete={isRegister ? "new-password" : "current-password"} required minLength={isRegister ? 12 : 1} value={form.password} onChange={(event) => change("password", event.target.value)} placeholder={isRegister ? "At least 12 characters" : "Your password"} /><button className="input-action" type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>
+            {!isRegister && <label>Password<span className="input-wrap"><LockKeyhole size={17} /><input type={showPassword ? "text" : "password"} autoComplete="current-password" required minLength={1} value={form.password || ""} onChange={(event) => change("password", event.target.value)} placeholder="Your password" /><button className="input-action" type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></span></label>}
             {!isRegister && <div className="auth-aux"><span>Email verification is required to sign in.</span><button type="button" onClick={async () => {
               if (!form.email) return setError("Enter your email address first.");
               try { await apiRequest("/api/auth/password/forgot", { method: "POST", body: JSON.stringify({ email: form.email }) }); setSuccess("If the account exists, password reset instructions have been sent."); setError(""); }

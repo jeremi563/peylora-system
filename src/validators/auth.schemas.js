@@ -10,7 +10,7 @@ export const registerSchema = z.object({
     name: z.string().trim().min(1).max(120),
     businessName: z.string().trim().min(1).max(160).optional(),
     email,
-    password,
+    password: password.optional(),
     phoneNumber: z.string().regex(/^254[17]\d{8}$/).optional()
 });
 
@@ -35,4 +35,10 @@ export const resetPasswordSchema = z.object({
 
 export const verifyEmailSchema = z.object({
     token: z.string().min(32).max(256)
+});
+
+export const completeEmailVerificationSchema = z.object({
+    email,
+    otp: z.string().regex(/^\d{6}$/),
+    password
 });

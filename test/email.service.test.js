@@ -55,8 +55,9 @@ test("verification email is sent through Brevo with the branded action template"
     assert.deepEqual(request[1].sender, { email: "verified@example.test", name: "Peyflow team" });
     assert.deepEqual(request[1].to, [{ email: "merchant@example.test" }]);
     assert.equal(request[1].subject, "Verify your Peyflow account");
-    assert.match(request[1].htmlContent, /Verify email address/);
-    assert.match(request[1].htmlContent, /https:\/\/app\.example\.test\/api\/auth\/verify-email\?token=token\+value%26/);
+    assert.match(request[1].htmlContent, /Enter verification code/);
+    assert.match(request[1].htmlContent, /token value&amp;/);
+    assert.match(request[1].htmlContent, /https:\/\/app\.example\.test\/verify-email/);
     assert.equal(request[2].headers["api-key"], "test-api-key");
     assert.equal(request[2].timeout, 10000);
 });

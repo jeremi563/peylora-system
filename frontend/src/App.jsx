@@ -22,6 +22,7 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage.jsx"));
 const SubscriptionPage = lazy(() => import("./pages/SubscriptionPage.jsx"));
 const SwaggerPage = lazy(() => import("./pages/SwaggerPage.jsx"));
 const TransactionsPage = lazy(() => import("./pages/TransactionsPage.jsx"));
+const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage.jsx"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage.jsx"));
 
 function RouteLoading() {
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="/register" element={user ? <Navigate to="/" replace /> : <AuthPage mode="register" />} />
         <Route path="/forgot-password" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
         <Route path="/reset-password" element={user ? <Navigate to="/" replace /> : <ResetPasswordPage />} />
+        <Route path="/verify-email" element={user ? <Navigate to="/" replace /> : <VerifyEmailPage />} />
         <Route path="/developers" element={<DeveloperPage />} />
         <Route path="/docs" element={<DeveloperPage />} />
         <Route path="/swagger" element={<SwaggerPage />} />

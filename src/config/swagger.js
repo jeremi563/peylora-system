@@ -209,6 +209,15 @@ All protected endpoints require a **Bearer token** (JWT access token) obtained f
                     token: { type: "string", minLength: 32, maxLength: 256, example: "emailverifytoken..." }
                 }
             },
+            CompleteEmailVerificationRequest: {
+                type: "object",
+                required: ["email", "otp", "password"],
+                properties: {
+                    email: { type: "string", format: "email", example: "jane@wanjiku.co.ke" },
+                    otp: { type: "string", pattern: "^\\d{6}$", example: "482019" },
+                    password: { type: "string", minLength: 12, maxLength: 128, example: "SecureMerchantP@ss!" }
+                }
+            },
             // ----------------------------------------------------------------
             // Payments
             // ----------------------------------------------------------------
@@ -862,6 +871,27 @@ Creates a new user account.
                             }
                         }
                     },
+                    429: { $ref: "#/components/responses/TooManyRequests" }
+                }
+            }
+        },
+        "/api/auth/email/complete-verification": {
+            post: {
+                tags: ["Authentication"],
+                summary: "Verify OTP, set password, and sign in",
+                description: "Consumes the email OTP, activates the account, sets the initial password, and returns an authenticated session.",
+                operationId: "completeEmailVerification",
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: { $ref: "#/components/schemas/CompleteEmailVerificationRequest" }
+                        }
+                    }
+                },
+                responses: {
+                    200: { description: "Email verified and authenticated" },
+                    400: { $ref: "#/components/responses/ValidationError" },
                     429: { $ref: "#/components/responses/TooManyRequests" }
                 }
             }

@@ -106,20 +106,20 @@ export async function sendNotificationEmail({ to, subject, text }) {
 function buildAuthUrl(path, token) {
     const baseUrl = process.env.PUBLIC_APP_URL || `http://localhost:${process.env.PORT || 5000}`;
     const url = new URL(path, baseUrl);
-    url.searchParams.set("token", token);
+    if (token) url.searchParams.set("token", token);
     return url.toString();
 }
 
-export async function sendVerificationEmail(email, token) {
-    const url = buildAuthUrl("/api/auth/verify-email", token);
+export async function sendVerificationEmail(email, otp) {
+    const url = buildAuthUrl("/verify-email", "");
     await sendAuthEmail({
         to: email,
         subject: "Verify your Peyflow account",
-        heading: "Verify your email address",
-        message: "Thanks for creating a Peyflow account. Confirm your email address to activate your merchant workspace.",
-        actionLabel: "Verify email address",
+        heading: "Confirm your email address",
+        message: `Thanks for creating a Peyflow account. Enter this verification code in the browser to activate your merchant workspace:\n\n${otp}\n\nThis code expires in one hour.`,
+        actionLabel: "Enter verification code",
         actionUrl: url,
-        developmentUrl: url
+        developmentUrl: `${url} (OTP: ${otp})`
     });
 }
 

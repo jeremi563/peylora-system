@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import {
     completePasswordReset,
+    completeVerification,
     forgotPassword,
     login,
     logout,
@@ -22,6 +23,7 @@ import {
     refreshSchema,
     registerSchema,
     resetPasswordSchema,
+    completeEmailVerificationSchema,
     verifyEmailSchema
 } from "../validators/auth.schemas.js";
 
@@ -34,6 +36,7 @@ router.post("/logout", validateRequest(refreshSchema), logout);
 router.post("/password/forgot", passwordRateLimit, validateRequest(forgotPasswordSchema), forgotPassword);
 router.post("/password/reset", passwordRateLimit, validateRequest(resetPasswordSchema), completePasswordReset);
 router.post("/email/verify", passwordRateLimit, validateRequest(verifyEmailSchema), verifyEmailAddress);
+router.post("/email/complete-verification", passwordRateLimit, validateRequest(completeEmailVerificationSchema), completeVerification);
 router.get("/verify-email", (req, res, next) => {
     req.body = { token: req.query.token };
     next();
