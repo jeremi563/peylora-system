@@ -1,5 +1,6 @@
 import {
     authenticateUser,
+    completeEmailVerification,
     createEmailVerificationToken,
     createPasswordResetToken,
     registerUser,
@@ -30,11 +31,32 @@ export async function register(req, res) {
 
         return res.status(201).json({
             success: true,
-            message: "Account created. Check your email to verify your account.",
-            user: result.user
+            message: "Account created. Enter the verification code sent to your email.",
+            email: result.user.email
         });
     } catch (error) {
         return handleError(res, error, "Registration");
+    }
+}
+
+export async function completeVerification(req, res) {
+    try {
+        const result = await completeEmailVerification(req.validatedBody);
+        if (!result.completed) {
+            return res.status(400).json({ success: false, message: "That verification code is invalid or expired" });
+        }
+
+        return res.json({
+            success: true,
+            message: "Email verified and account ready.",
+            user: result.user,
+            accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
+            tokenType: "Bearer",
+            expiresIn: 900
+        });
+    } catch (error) {
+        return handleError(res, error, "Email verification");
     }
 }
 

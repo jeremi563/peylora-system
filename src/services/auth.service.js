@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
@@ -7,6 +7,7 @@ import { getDatabasePool } from "../database.js";
 const ACCESS_TOKEN_TTL = "15m";
 const REFRESH_TOKEN_TTL_DAYS = 30;
 const ONE_TIME_TOKEN_TTL_HOURS = 1;
+const VERIFICATION_OTP_LENGTH = 6;
 
 function hashToken(token) {
     return createHash("sha256").update(token).digest("hex");
@@ -14,6 +15,10 @@ function hashToken(token) {
 
 function createOneTimeToken() {
     return randomBytes(32).toString("base64url");
+}
+
+function createVerificationOtp() {
+    return String(randomInt(0, 1_000_000)).padStart(VERIFICATION_OTP_LENGTH, "0");
 }
 
 function createAccessToken(user) {
@@ -58,8 +63,8 @@ async function createRefreshToken(client, userId, familyId = randomUUID()) {
 export async function registerUser({ name, businessName, email, password, phoneNumber }) {
     const pool = getDatabasePool();
     const client = await pool.connect();
-    const passwordHash = await bcrypt.hash(password, 12);
-    const verificationToken = createOneTimeToken();
+    const passwordHash = await bcrypt.hash(password || createOneTimeToken(), 12);
+    const verificationToken = createVerificationOtp();
 
     try {
         await client.query("BEGIN");
@@ -230,7 +235,7 @@ export async function createPasswordResetToken(email) {
         return null;
     }
 
-    const token = createOneTimeToken();
+    const token = createVerificationOtp();
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -350,6 +355,62 @@ export async function verifyEmail(token) {
         ]);
         await client.query("COMMIT");
         return true;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+export async function completeEmailVerification({ email, otp, password }) {
+    const pool = getDatabasePool();
+    const client = await pool.connect();
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    try {
+        await client.query("BEGIN");
+        const verification = await client.query(
+            `SELECT evt.id, evt.user_id, u.name, u.email, u.phone_number, u.role, u.status
+             FROM email_verification_tokens evt
+             JOIN users u ON u.id = evt.user_id
+             WHERE LOWER(u.email) = LOWER($1)
+               AND evt.token_hash = $2
+               AND evt.used_at IS NULL
+               AND evt.expires_at > NOW()
+             ORDER BY evt.created_at DESC
+             LIMIT 1
+             FOR UPDATE OF evt, u`,
+            [email, hashToken(otp)]
+        );
+
+        if (!verification.rowCount || verification.rows[0].status !== "ACTIVE") {
+            await client.query("ROLLBACK");
+            return { completed: false };
+        }
+
+        const current = verification.rows[0];
+        await client.query(
+            `UPDATE users
+             SET password_hash = $2, email_verified = true, updated_at = NOW()
+             WHERE id = $1`,
+            [current.user_id, passwordHash]
+        );
+        await client.query("UPDATE email_verification_tokens SET used_at = NOW() WHERE id = $1", [current.id]);
+
+        const user = {
+            id: current.user_id,
+            name: current.name,
+            email: current.email,
+            phone_number: current.phone_number,
+            role: current.role,
+            email_verified: true
+        };
+        const accessToken = createAccessToken(user);
+        const refreshToken = await createRefreshToken(client, user.id);
+        await client.query("COMMIT");
+
+        return { completed: true, user: publicUser(user), accessToken, refreshToken };
     } catch (error) {
         await client.query("ROLLBACK");
         throw error;

@@ -4,7 +4,8 @@ import test from "node:test";
 import {
     loginSchema,
     registerSchema,
-    resetPasswordSchema
+    resetPasswordSchema,
+    completeEmailVerificationSchema
 } from "../src/validators/auth.schemas.js";
 
 test("registration normalizes email and rejects invalid phone or oversized password", () => {
@@ -36,4 +37,17 @@ test("login and password reset enforce password byte and token constraints", () 
     assert.equal(loginSchema.safeParse({ email: "user@example.test", password: "a".repeat(73) }).success, false);
     assert.equal(resetPasswordSchema.safeParse({ token: "t".repeat(32), password: "NewPassword!123" }).success, true);
     assert.equal(resetPasswordSchema.safeParse({ token: "short", password: "NewPassword!123" }).success, false);
+});
+
+test("email verification requires a six-digit OTP and a strong password", () => {
+    assert.equal(completeEmailVerificationSchema.safeParse({
+        email: "merchant@example.test",
+        otp: "482019",
+        password: "NewPassword!123"
+    }).success, true);
+    assert.equal(completeEmailVerificationSchema.safeParse({
+        email: "merchant@example.test",
+        otp: "12345",
+        password: "NewPassword!123"
+    }).success, false);
 });
