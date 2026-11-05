@@ -9,6 +9,7 @@ A merchant payment workspace built with React, Node.js, Express, and PostgreSQL.
 - Creates M-Pesa STK Push requests and tracks payment attempts.
 - Receives Daraja callbacks, stores them idempotently, and processes them asynchronously.
 - Manages merchant accounts, invoices, payment links, notifications, analytics, and exports.
+- Activates new accounts through a six-digit email OTP, initial password setup, and automatic sign-in.
 - Provides JWT-based authentication, request validation, rate limiting, audit logging, and health endpoints.
 - Serves the interactive API docs at `/api/docs` when enabled.
 
@@ -104,9 +105,14 @@ The frontend can be deployed separately from the `frontend/` directory. Set `VIT
 
 ## API and Tests
 
+- Complete endpoint reference: [api.md](api.md)
 - Swagger UI: `/api/docs` (requires `ENABLE_API_DOCS=true` in production)
 - OpenAPI JSON: `/api/docs.json`
 - Health: `/health` and `/api/health`
+
+New users register with `POST /api/auth/register`, receive a six-digit email verification code, and complete activation with `POST /api/auth/email/complete-verification`. That endpoint sets the initial password, verifies the email, and returns access and refresh tokens. Verification codes expire after one hour and can be resent with `POST /api/auth/email/resend-verification`.
+
+See [api.md](api.md) for request formats, authentication requirements, query parameters, response behavior, status codes, and the complete endpoint inventory.
 
 Run checks from the repository root:
 
