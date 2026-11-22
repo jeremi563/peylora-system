@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { getDatabasePool } from "../database.js";
+import { reverseInvoiceAllocations } from "./accounting.service.js";
 
 function mapInvoice(row) {
     if (!row) return null;
@@ -158,6 +159,8 @@ export async function updateInvoiceStatus(merchantId, invoiceId, requestedStatus
         DRAFT: ["SENT", "CANCELLED"],
         SENT: ["CANCELLED", "OVERDUE"],
         PENDING: ["CANCELLED", "OVERDUE"],
+        PARTIALLY_PAID: ["CANCELLED", "OVERDUE"],
+        PAID: ["CANCELLED"],
         OVERDUE: ["SENT", "CANCELLED"]
     };
 
@@ -174,6 +177,7 @@ export async function updateInvoiceStatus(merchantId, invoiceId, requestedStatus
         }
 
         if (requestedStatus === "CANCELLED") {
+            await reverseInvoiceAllocations(client, merchantId, invoiceId);
             const pendingPayment = await client.query(
                 "SELECT 1 FROM payments WHERE invoice_id = $1 AND status = 'PENDING' LIMIT 1",
                 [invoiceId]

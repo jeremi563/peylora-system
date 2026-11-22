@@ -11,6 +11,7 @@ import mpesaRoutes from "./routes/mpesa.routes.js";
 import notificationRoutes from "./routes/notification.routes.js";
 import paymentLinkRoutes from "./routes/payment-link.routes.js";
 import webhookRoutes from "./routes/webhook.routes.js";
+import accountingRoutes from "./routes/accounting.routes.js";
 import {
 	apiErrorHandler,
 	apiRateLimit,
@@ -58,6 +59,7 @@ app.use("/api/merchants", merchantRoutes);
 app.use(paymentLinkRoutes);
 app.use(notificationRoutes);
 app.use(webhookRoutes);
+app.use(accountingRoutes);
 app.use(mpesaRoutes);
 app.use(healthRoutes);
 app.use(docsRoutes);

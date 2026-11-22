@@ -1,6 +1,7 @@
 import { getDatabasePool } from "../database.js";
 import { createHash } from "node:crypto";
 import { recordPaymentNotifications } from "./notification.service.js";
+import { processSuccessfulProviderTransaction } from "./accounting.service.js";
 
 export class IdempotencyConflictError extends Error {
     constructor() {
@@ -508,14 +509,15 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
         return { matched: true, duplicate: true, status: current.rows[0]?.status };
     }
 
-    await client.query(
+    const providerTransaction = await client.query(
         `INSERT INTO provider_transactions (
             merchant_id, attempt_transaction_id, provider, outcome,
             provider_reference, received_amount, currency,
             evidence_type, evidence_event_key, evidence_payload
          )
          VALUES ($1, $2, 'MPESA', $3, $4, $5, 'KES', 'CALLBACK', $6, $7)
-         ON CONFLICT (attempt_transaction_id) DO NOTHING`,
+         ON CONFLICT (attempt_transaction_id) DO NOTHING
+         RETURNING id`,
         [
             transaction.merchant_id,
             transaction.id,
@@ -526,6 +528,23 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
             JSON.stringify({ callback, metadata })
         ]
     );
+
+    let providerTransactionId = providerTransaction.rows[0]?.id ?? null;
+    if (!providerTransactionId) {
+        const existingProviderTransaction = await client.query(
+            "SELECT id FROM provider_transactions WHERE attempt_transaction_id = $1",
+            [transaction.id]
+        );
+        providerTransactionId = existingProviderTransaction.rows[0]?.id ?? null;
+    }
+    if (outcome.status === "SUCCESS" && providerTransactionId) {
+        await processSuccessfulProviderTransaction(client, {
+            merchantId: transaction.merchant_id,
+            providerTransactionId,
+            receivedAmount: outcome.paidAmount,
+            paymentId: update.rows[0].payment_id
+        });
+    }
 
     await client.query(
         `UPDATE payments SET status = $2, completed_at = NOW(), updated_at = NOW()
