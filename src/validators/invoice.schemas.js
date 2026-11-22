@@ -41,7 +41,7 @@ export const createInvoiceSchema = z.object({
 });
 
 export const invoiceListSchema = z.object({
-    status: z.enum(["DRAFT", "SENT", "PENDING", "PAID", "OVERDUE", "CANCELLED"]).optional(),
+    status: z.enum(["DRAFT", "SENT", "PENDING", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"]).optional(),
     search: z.string().trim().max(100).optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(25)
