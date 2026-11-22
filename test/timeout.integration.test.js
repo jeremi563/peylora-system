@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import axios from "axios";
 
 import "dotenv/config";
 
 process.env.NODE_ENV = "test";
 process.env.AUTH_JWT_SECRET = "phase-ten-timeout-test-secret-at-least-32";
+process.env.MPESA_CONSUMER_KEY = "test-key";
+process.env.MPESA_CONSUMER_SECRET = "test-secret";
+process.env.MPESA_SHORTCODE = "174379";
+process.env.MPESA_PASSKEY = "test-passkey";
 
 test("pending attempts become TIMEOUT once and late callbacks remain eligible", async () => {
     const { connectDatabase, closeDatabase, getDatabasePool } = await import("../src/database.js");
@@ -16,6 +21,35 @@ test("pending attempts become TIMEOUT once and late callbacks remain eligible", 
     let merchantId;
     let paymentId;
     let attemptId;
+    const originalAdapter = axios.defaults.adapter;
+    axios.defaults.adapter = async (config) => {
+        if (config.url.includes("oauth")) {
+            return {
+                data: { access_token: "timeout-test-access-token" },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config
+            };
+        }
+        if (config.url.includes("stkpushquery")) {
+            return {
+                data: {
+                    ResponseCode: "0",
+                    ResponseDescription: "The service request has been processed successfully",
+                    MerchantRequestID: "timeout-test-merchant",
+                    CheckoutRequestID: null,
+                    ResultCode: 1032,
+                    ResultDesc: "Request cancelled by user"
+                },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config
+            };
+        }
+        throw new Error(`Unexpected Daraja request: ${config.url}`);
+    };
 
     try {
         const user = await pool.query(
@@ -93,6 +127,7 @@ test("pending attempts become TIMEOUT once and late callbacks remain eligible", 
         );
         assert.equal(finalState.rows[0].status, "CANCELLED");
     } finally {
+        axios.defaults.adapter = originalAdapter;
         await pool.query("DELETE FROM provider_transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM payments WHERE merchant_id = $1", [merchantId]).catch(() => {});

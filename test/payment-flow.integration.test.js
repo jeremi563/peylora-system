@@ -66,6 +66,23 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
             };
         }
 
+        if (config.url.includes("stkpushquery")) {
+            return {
+                data: {
+                    ResponseCode: "0",
+                    ResponseDescription: "The service request has been processed successfully",
+                    MerchantRequestID: "integration-test-merchant",
+                    CheckoutRequestID: checkoutRequestId,
+                    ResultCode: 0,
+                    ResultDesc: "The service request is processed successfully."
+                },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config
+            };
+        }
+
         throw new Error(`Unexpected Daraja request: ${config.url}`);
     };
 

@@ -2,6 +2,13 @@ import { getDatabasePool } from "../database.js";
 import { createHash } from "node:crypto";
 import { recordPaymentNotifications } from "./notification.service.js";
 import { processSuccessfulProviderTransaction } from "./accounting.service.js";
+import {
+    callbackMatchesDarajaStatus,
+    getAccessToken,
+    generateTimestamp,
+    generateStkPassword,
+    queryStkStatus
+} from "./mpesa.service.js";
 
 export class IdempotencyConflictError extends Error {
     constructor() {
@@ -654,6 +661,31 @@ export async function applyMpesaCallback(callback, metadata) {
 
     if (typeof checkoutRequestId !== "string" || !checkoutRequestId || resultCode === null || !metadata || typeof metadata !== "object") {
         return { matched: false, reason: "INVALID_CALLBACK" };
+    }
+
+    try {
+        const accessToken = await getAccessToken();
+        const statusResponse = await queryStkStatus({
+            shortCode: process.env.MPESA_SHORTCODE,
+            passkey: process.env.MPESA_PASSKEY,
+            timestamp: generateTimestamp(),
+            checkoutRequestId
+        }, accessToken);
+        if (!callbackMatchesDarajaStatus(callback, statusResponse)) {
+            return {
+                matched: false,
+                reason: "DARAJA_STATUS_MISMATCH",
+                storedForRetry: true,
+                statusResponse
+            };
+        }
+    } catch (error) {
+        return {
+            matched: false,
+            reason: "DARAJA_STATUS_VERIFICATION_FAILED",
+            storedForRetry: true,
+            error: error.message
+        };
     }
 
     const pool = getDatabasePool();

@@ -133,3 +133,4 @@ Integration tests require a reachable test database configured through `DATABASE
 - Use environment or hosting secret settings for all private values. `.env.example` is a template, not a production configuration.
 - Keep the callback endpoint publicly reachable over HTTPS and set the exact URL in Daraja and the application environment.
 - The current M-Pesa client targets the sandbox API origin; verify the integration and credentials before any production payment use.
+- Before applying an M-Pesa callback, Peylora queries Daraja STK status and only proceeds when the provider result code matches the callback result code.
