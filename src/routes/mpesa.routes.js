@@ -6,6 +6,7 @@ import {
     getTransaction,
     initiateStkPush,
     listPayments,
+    retryPayment,
     reconcileTransaction,
     receiveMpesaCallback
 } from "../controllers/mpesa.controller.js";
@@ -41,6 +42,14 @@ router.get(
     authorizeRoles("MERCHANT"),
     validateParam(paymentIdSchema, "paymentId"),
     getPayment
+);
+router.post(
+    "/api/payments/:paymentId/retry",
+    paymentRateLimit,
+    authenticateAccessToken,
+    authorizeRoles("MERCHANT"),
+    validateParam(paymentIdSchema, "paymentId"),
+    retryPayment
 );
 router.get(
     "/api/transactions/:transactionId",
