@@ -142,4 +142,23 @@ export function extractCallbackMetadata(callbackMetadata) {
     return metadata;
 }
 
+export function extractDarajaStatusResultCode(statusResponse) {
+    if (statusResponse?.ResultCode !== undefined) {
+        return Number(statusResponse.ResultCode);
+    }
+    if (statusResponse?.resultCode !== undefined) {
+        return Number(statusResponse.resultCode);
+    }
+    return null;
+}
+
+export function callbackMatchesDarajaStatus(callback, statusResponse) {
+    if (!callback || typeof callback !== "object") return false;
+    const callbackCode = Number(callback.ResultCode);
+    const statusCode = extractDarajaStatusResultCode(statusResponse);
+    return Number.isInteger(callbackCode)
+        && statusCode !== null
+        && callbackCode === statusCode;
+}
+
 

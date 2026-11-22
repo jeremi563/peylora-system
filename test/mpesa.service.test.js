@@ -5,6 +5,7 @@ import axios from "axios";
 
 import {
     buildStkPayload,
+    callbackMatchesDarajaStatus,
     extractCallbackMetadata,
     generateStkPassword,
     generateTimestamp,
@@ -95,4 +96,23 @@ test("metadata extraction and payment outcome use callback amount", () => {
     assert.equal(determineCallbackOutcome(1032, {}, 25).status, "CANCELLED");
     assert.equal(determineCallbackOutcome(1, {}, 25).status, "FAILED");
     assert.equal(determineCallbackOutcome(0, {}, 25).status, "FAILED");
+});
+
+test("callback outcomes must match Daraja status-query results", () => {
+    assert.equal(callbackMatchesDarajaStatus(
+        { ResultCode: 0 },
+        { ResultCode: 0 }
+    ), true);
+    assert.equal(callbackMatchesDarajaStatus(
+        { ResultCode: 1032 },
+        { ResultCode: 1032 }
+    ), true);
+    assert.equal(callbackMatchesDarajaStatus(
+        { ResultCode: 0 },
+        { ResultCode: 1032 }
+    ), false);
+    assert.equal(callbackMatchesDarajaStatus(
+        { ResultCode: 0 },
+        { ResponseCode: "0" }
+    ), false);
 });
