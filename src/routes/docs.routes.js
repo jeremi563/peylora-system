@@ -24,6 +24,10 @@ if (docsEnabled) {
         res.setHeader("Content-Type", "application/json");
         res.json(swaggerSpec);
     });
+    router.get("/api/v1/docs.json", (_req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        res.json(swaggerSpec);
+    });
 
     // Swagger UI — interactive browser for the API documentation.
     const uiOptions = {
@@ -84,6 +88,8 @@ if (docsEnabled) {
 
     router.use("/api/docs", swaggerUi.serve);
     router.get("/api/docs", swaggerUi.setup(swaggerSpec, uiOptions));
+    router.use("/api/v1/docs", swaggerUi.serve);
+    router.get("/api/v1/docs", swaggerUi.setup(swaggerSpec, uiOptions));
 }
 
 export default router;

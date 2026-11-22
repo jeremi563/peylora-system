@@ -25,6 +25,21 @@ test("security middleware sets headers, restricts CORS, caps JSON bodies, and ap
         assert.equal(response.headers.get("x-powered-by"), null);
         assert.ok(response.headers.get("x-request-id"));
 
+        response = await fetch(`${base}/api/health`);
+        assert.equal(response.status, 200);
+        response = await fetch(`${base}/api/v1/health`);
+        assert.equal(response.status, 200);
+        response = await fetch(`${base}/api/v1/docs.json`);
+        assert.equal(response.status, 200);
+        const v1Docs = await response.json();
+        assert.ok(v1Docs.openapi);
+        response = await fetch(`${base}/api/v1/mpesa/callback`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}"
+        });
+        assert.equal(response.status, 404);
+
         response = await fetch(`${base}/`, { headers: { Origin: "https://untrusted.example.test" } });
         assert.equal(response.status, 403);
         assert.equal((await response.json()).code, "CORS_ORIGIN_DENIED");

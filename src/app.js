@@ -41,7 +41,7 @@ const helmetDocs = helmet({
 });
 
 app.use((req, res, next) => {
-	if (req.path.startsWith("/api/docs")) {
+	if (req.path.startsWith("/api/docs") || req.path.startsWith("/api/v1/docs")) {
 		return helmetDocs(req, res, next);
 	}
 	return helmetStrict(req, res, next);
@@ -52,6 +52,18 @@ app.use(enforceHttps);
 
 app.use("/api", apiRateLimit);
 app.use(express.json({ limit: "64kb", strict: true }));
+
+// Preserve every existing /api route while exposing a backward-compatible v1 alias.
+// Rewriting before the route mounts keeps route definitions and provider callbacks unchanged.
+app.use((req, res, next) => {
+	if (
+		req.url.startsWith("/api/v1/")
+		&& !req.url.startsWith("/api/v1/mpesa/callback")
+	) {
+		req.url = req.url.replace(/^\/api\/v1/, "/api");
+	}
+	return next();
+});
 app.use("/api/auth", authRoutes);
 app.use(analyticsRoutes);
 app.use(invoiceRoutes);

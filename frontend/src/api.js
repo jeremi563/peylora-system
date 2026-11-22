@@ -1,5 +1,12 @@
 const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/$/, "");
 
+function versionedApiPath(path) {
+  if (path.startsWith("/api/v1/")) return path;
+  return path.startsWith("/api/")
+    ? path.replace(/^\/api\//, "/api/v1/")
+    : path;
+}
+
 export class ApiError extends Error {
   constructor(message, status, body) {
     super(message);
@@ -29,7 +36,7 @@ export function clearSession() {
 async function refreshSession() {
   if (!refreshToken) return false;
   if (!refreshPromise) {
-    refreshPromise = fetch(`${API_BASE}/api/auth/refresh`, {
+    refreshPromise = fetch(`${API_BASE}/api/v1/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken })
@@ -46,6 +53,7 @@ async function refreshSession() {
 }
 
 export async function apiRequest(path, options = {}, allowRefresh = true) {
+  path = versionedApiPath(path);
   const headers = new Headers(options.headers || {});
   if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -59,7 +67,13 @@ export async function apiRequest(path, options = {}, allowRefresh = true) {
     throw new ApiError("Could not connect to the API. Check the server and try again.", 0);
   }
 
-  if (response.status === 401 && allowRefresh && refreshToken && !path.startsWith("/api/auth/")) {
+  if (
+    response.status === 401
+    && allowRefresh
+    && refreshToken
+    && !path.startsWith("/api/auth/")
+    && !path.startsWith("/api/v1/auth/")
+  ) {
     if (await refreshSession()) return apiRequest(path, options, false);
     clearSession();
   }
@@ -80,6 +94,7 @@ export async function apiRequest(path, options = {}, allowRefresh = true) {
 }
 
 export async function downloadReport(path, filename) {
+  path = versionedApiPath(path);
   const headers = new Headers();
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   const response = await fetch(`${API_BASE}${path}`, { headers });
