@@ -17,7 +17,8 @@ export async function createPendingTransaction({
     description,
     paymentLinkId,
     invoiceId,
-    idempotencyKey
+    idempotencyKey,
+    existingPaymentId
 }) {
     const pool = getDatabasePool();
     const client = await pool.connect();
@@ -112,6 +113,83 @@ export async function createPendingTransaction({
             accountReference,
             reused: false,
             createdAt: transaction.rows[0].created_at
+        };
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+export async function getRetryableMerchantPayment(merchantId, paymentId) {
+    const result = await getDatabasePool().query(
+        `SELECT p.id, p.amount, p.phone_number, p.description,
+                p.payment_link_id, p.invoice_id, p.status
+         FROM payments p
+         WHERE p.id = $1 AND p.merchant_id = $2`,
+        [paymentId, merchantId]
+    );
+    return result.rows[0] ?? null;
+}
+
+export async function createPaymentAttempt({
+    merchantId,
+    paymentId,
+    accountReference,
+    phoneNumber,
+    requestedAmount,
+    idempotencyKey
+}) {
+    const client = await getDatabasePool().connect();
+    try {
+        await client.query("BEGIN");
+        const payment = await client.query(
+            `SELECT id, merchant_id
+             FROM payments
+             WHERE id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [paymentId, merchantId]
+        );
+        if (!payment.rowCount) {
+            await client.query("ROLLBACK");
+            return null;
+        }
+
+        const attempt = await client.query(
+            `INSERT INTO transactions (
+                payment_id, merchant_id, account_reference, amount,
+                currency, phone_number, provider, status
+             )
+             VALUES ($1, $2, $3, $4, 'KES', $5, 'MPESA', 'PENDING')
+             RETURNING id, payment_id, amount, status, created_at`,
+            [paymentId, merchantId, accountReference, requestedAmount, phoneNumber]
+        );
+
+        await client.query(
+            `UPDATE payments
+             SET status = 'PENDING', completed_at = NULL, updated_at = NOW()
+             WHERE id = $1 AND merchant_id = $2`,
+            [paymentId, merchantId]
+        );
+        await client.query(
+            `UPDATE invoices
+             SET status = 'PENDING', updated_at = NOW()
+             WHERE id = (SELECT invoice_id FROM payments WHERE id = $1)
+               AND status IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID')`,
+            [paymentId]
+        );
+        await client.query("COMMIT");
+
+        return {
+            _id: attempt.rows[0].id,
+            paymentId,
+            requestedAmount: Number(attempt.rows[0].amount),
+            status: attempt.rows[0].status,
+            accountReference,
+            idempotencyKey: idempotencyKey ?? null,
+            reused: false,
+            createdAt: attempt.rows[0].created_at
         };
     } catch (error) {
         await client.query("ROLLBACK");
@@ -429,6 +507,25 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
         const current = await client.query("SELECT status FROM transactions WHERE id = $1", [transaction.id]);
         return { matched: true, duplicate: true, status: current.rows[0]?.status };
     }
+
+    await client.query(
+        `INSERT INTO provider_transactions (
+            merchant_id, attempt_transaction_id, provider, outcome,
+            provider_reference, received_amount, currency,
+            evidence_type, evidence_event_key, evidence_payload
+         )
+         VALUES ($1, $2, 'MPESA', $3, $4, $5, 'KES', 'CALLBACK', $6, $7)
+         ON CONFLICT (attempt_transaction_id) DO NOTHING`,
+        [
+            transaction.merchant_id,
+            transaction.id,
+            outcome.status,
+            outcome.status === "SUCCESS" ? (metadata.MpesaReceiptNumber ?? null) : null,
+            outcome.status === "SUCCESS" ? (outcome.paidAmount ?? null) : null,
+            `mpesa:${callback.CheckoutRequestID}`,
+            JSON.stringify({ callback, metadata })
+        ]
+    );
 
     await client.query(
         `UPDATE payments SET status = $2, completed_at = NOW(), updated_at = NOW()

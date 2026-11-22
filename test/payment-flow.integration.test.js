@@ -170,6 +170,18 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         );
         assert.equal(processed.status, "SUCCESS");
 
+        const providerTransaction = await pool.query(
+            `SELECT id, outcome, received_amount, evidence_type, evidence_event_key
+             FROM provider_transactions
+             WHERE attempt_transaction_id = $1`,
+            [transactionId]
+        );
+        assert.equal(providerTransaction.rowCount, 1);
+        assert.equal(providerTransaction.rows[0].outcome, "SUCCESS");
+        assert.equal(Number(providerTransaction.rows[0].received_amount), 245);
+        assert.equal(providerTransaction.rows[0].evidence_type, "CALLBACK");
+        assert.equal(providerTransaction.rows[0].evidence_event_key, eventKey);
+
         const finalState = await pool.query(
             `SELECT p.status AS payment_status, p.amount, t.status AS transaction_status,
                     t.paid_amount, t.mpesa_receipt_number, pl.status AS link_status
@@ -220,6 +232,13 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         );
         assert.equal(duplicate.duplicate, true);
         assert.equal(duplicate.eventId, queued.rows[0].id);
+
+        response = await fetch(`${baseUrl}/api/payments/${paymentId}/retry`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${session.accessToken}` }
+        });
+        assert.equal(response.status, 409);
+        assert.equal((await response.json()).message, "A successful payment request cannot be retried");
         const afterDuplicate = await pool.query(
             "SELECT COUNT(*)::integer AS count FROM notifications WHERE event_key = $1",
             [eventKey]
@@ -235,6 +254,13 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         }
         if (paymentId) {
             await pool.query("DELETE FROM audit_logs WHERE event_key = $1", [`payment-created:${paymentId}`]);
+            await pool.query(
+                `DELETE FROM provider_transactions
+                 WHERE attempt_transaction_id IN (
+                     SELECT id FROM transactions WHERE payment_id = $1
+                 )`,
+                [paymentId]
+            );
             await pool.query("DELETE FROM transactions WHERE payment_id = $1", [paymentId]);
             await pool.query("DELETE FROM payments WHERE id = $1", [paymentId]);
         }

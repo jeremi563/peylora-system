@@ -148,6 +148,23 @@ test("financial foundation protects provider, allocation, credit, and unassigned
         );
         assert.equal(beforeEvidence.rows[0].count, 0);
 
+        const transactionService = await import("../src/services/transaction.service.js");
+        const retryAttempt = await transactionService.createPaymentAttempt({
+            merchantId,
+            paymentId,
+            accountReference: `ACC-RETRY-${suffix}`,
+            phoneNumber: `254700${suffix.replace(/-/g, "").slice(0, 6)}`,
+            requestedAmount: 10000,
+            description: "Retry attempt"
+        });
+        assert.ok(retryAttempt);
+        assert.equal(retryAttempt.paymentId, paymentId);
+        const attemptCount = await pool.query(
+            "SELECT COUNT(*)::integer AS count FROM transactions WHERE payment_id = $1",
+            [paymentId]
+        );
+        assert.equal(attemptCount.rows[0].count, 2);
+
         const providerOne = (await pool.query(
             `INSERT INTO provider_transactions (
                 merchant_id, attempt_transaction_id, provider, outcome,

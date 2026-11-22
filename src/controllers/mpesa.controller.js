@@ -10,9 +10,11 @@ import {
     sendStkPush
 } from "../services/mpesa.service.js";
 import {
+    createPaymentAttempt,
     createPendingTransaction,
     getMerchantPayment,
     getMerchantTransaction,
+    getRetryableMerchantPayment,
     listMerchantPayments,
     markInitiationFailed,
     markReconciliationRequested,
@@ -32,13 +34,15 @@ async function initiatePayment(req, res, {
     merchantId,
     amount: fixedAmount,
     description: fixedDescription,
+    phoneNumber: fixedPhoneNumber,
     paymentLinkId,
     invoiceId,
+    existingPaymentId,
     idempotencyKey: fixedIdempotencyKey
 }) {
     const requestBody = req.validatedBody ?? req.body ?? {};
     const amount = fixedAmount ?? requestBody.amount;
-    const phoneNumber = requestBody.phoneNumber;
+    const phoneNumber = fixedPhoneNumber ?? requestBody.phoneNumber;
     const description = fixedDescription ?? requestBody.description;
 
     if (typeof phoneNumber !== "string" || !/^254[17]\d{8}$/.test(phoneNumber)) {
@@ -70,16 +74,33 @@ async function initiatePayment(req, res, {
     let stkRequestDispatched = false;
 
     try {
-        transaction = await createPendingTransaction({
-            merchantId,
-            accountReference,
-            phoneNumber,
-            requestedAmount: amount,
-            description,
-            paymentLinkId,
-            invoiceId,
-            idempotencyKey
-        });
+        transaction = existingPaymentId
+            ? await createPaymentAttempt({
+                merchantId,
+                paymentId: existingPaymentId,
+                accountReference,
+                phoneNumber,
+                requestedAmount: amount,
+                description,
+                idempotencyKey
+            })
+            : await createPendingTransaction({
+                merchantId,
+                accountReference,
+                phoneNumber,
+                requestedAmount: amount,
+                description,
+                paymentLinkId,
+                invoiceId,
+                idempotencyKey
+            });
+
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: "Payment request not found"
+            });
+        }
 
         if (transaction.reused) {
             return res.status(200).json({
@@ -187,6 +208,49 @@ export function initiatePaymentLinkPayment(req, res, link) {
         paymentLinkId: link.id,
         invoiceId: link.invoice_id,
         idempotencyKey: clientKey ? `link:${link.id}:${clientKey}` : undefined
+    });
+}
+
+export async function retryPayment(req, res) {
+    const clientKey = req.get("Idempotency-Key")?.trim();
+    if (clientKey && !/^[\x21-\x7E]{1,128}$/.test(clientKey)) {
+        return res.status(400).json({ message: "Idempotency-Key must be 1-128 visible ASCII characters" });
+    }
+
+    const payment = await getRetryableMerchantPayment(
+        req.auth.merchantId,
+        req.params.paymentId
+    );
+    if (!payment) {
+        return res.status(404).json({
+            success: false,
+            message: "Payment request not found"
+        });
+    }
+    if (payment.status === "PENDING") {
+        return res.status(409).json({
+            success: false,
+            message: "A pending attempt already exists for this payment request"
+        });
+    }
+    if (payment.status === "SUCCESS") {
+        return res.status(409).json({
+            success: false,
+            message: "A successful payment request cannot be retried"
+        });
+    }
+
+    return initiatePayment(req, res, {
+        merchantId: req.auth.merchantId,
+        amount: Number(payment.amount),
+        description: payment.description,
+        phoneNumber: payment.phone_number,
+        paymentLinkId: payment.payment_link_id,
+        invoiceId: payment.invoice_id,
+        existingPaymentId: payment.id,
+        idempotencyKey: clientKey
+            ? `retry:${payment.id}:${clientKey}`
+            : `retry:${payment.id}:${randomBytes(12).toString('hex')}`
     });
 }
 
