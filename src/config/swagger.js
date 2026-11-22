@@ -60,6 +60,10 @@ All protected endpoints require a **Bearer token** (JWT access token) obtained f
         {
             url: "/",
             description: "Current server"
+        },
+        {
+            url: "/api/v1",
+            description: "Version 1 API"
         }
     ],
     tags: [
