@@ -523,3 +523,94 @@ export async function allocateCustomerCreditOldest({
         client.release();
     }
 }
+
+export async function getInvoiceAccountingSummary(merchantId, invoiceId) {
+    const pool = getDatabasePool();
+    const invoice = await pool.query(
+        `SELECT id, merchant_id, customer_id, total_amount, status
+         FROM invoices
+         WHERE id = $1 AND merchant_id = $2`,
+        [invoiceId, merchantId]
+    );
+    if (!invoice.rowCount) return null;
+
+    const allocations = await pool.query(
+        `SELECT pa.id, pa.customer_id, pa.source_type, pa.amount,
+                pa.provider_transaction_id, pa.unassigned_received_funds_id,
+                pa.created_at,
+                ar.id AS reversal_id, ar.created_at AS reversed_at
+         FROM payment_allocations pa
+         LEFT JOIN allocation_reversals ar
+           ON ar.merchant_id = pa.merchant_id
+          AND ar.original_allocation_id = pa.id
+         WHERE pa.merchant_id = $1 AND pa.invoice_id = $2
+         ORDER BY pa.created_at DESC, pa.id`,
+        [merchantId, invoiceId]
+    );
+    const active = allocations.rows
+        .filter((row) => !row.reversal_id)
+        .reduce((sum, row) => sum + toCents(row.amount), 0n);
+    const total = toCents(invoice.rows[0].total_amount);
+    const outstanding = total - active;
+
+    return {
+        invoiceId,
+        status: invoice.rows[0].status,
+        totalAmount: fromCents(total),
+        allocatedAmount: fromCents(active),
+        outstandingAmount: fromCents(outstanding > 0n ? outstanding : 0n),
+        allocations: allocations.rows.map((row) => ({
+            id: row.id,
+            customerId: row.customer_id,
+            sourceType: row.source_type,
+            amount: Number(row.amount),
+            providerTransactionId: row.provider_transaction_id,
+            unassignedReceivedFundsId: row.unassigned_received_funds_id,
+            createdAt: row.created_at,
+            reversedAt: row.reversed_at
+        }))
+    };
+}
+
+export async function getCustomerAccountingSummary(merchantId, customerId) {
+    const pool = getDatabasePool();
+    const customer = await pool.query(
+        `SELECT id, name, phone_number
+         FROM customers
+         WHERE id = $1 AND merchant_id = $2`,
+        [customerId, merchantId]
+    );
+    if (!customer.rowCount) return null;
+
+    const credit = await pool.query(
+        `SELECT available_amount
+         FROM customer_credit_balances
+         WHERE merchant_id = $1 AND customer_id = $2`,
+        [merchantId, customerId]
+    );
+    const ledger = await pool.query(
+        `SELECT id, entry_type, direction, amount, provider_transaction_id,
+                allocation_id, allocation_reversal_id, event_key, created_at
+         FROM customer_credit_ledger
+         WHERE merchant_id = $1 AND customer_id = $2
+         ORDER BY created_at DESC, id`,
+        [merchantId, customerId]
+    );
+
+    return {
+        customerId,
+        customerName: customer.rows[0].name,
+        availableCredit: credit.rowCount ? Number(credit.rows[0].available_amount) : 0,
+        ledger: ledger.rows.map((row) => ({
+            id: row.id,
+            entryType: row.entry_type,
+            direction: row.direction,
+            amount: Number(row.amount),
+            providerTransactionId: row.provider_transaction_id,
+            allocationId: row.allocation_id,
+            allocationReversalId: row.allocation_reversal_id,
+            eventKey: row.event_key,
+            createdAt: row.created_at
+        }))
+    };
+}

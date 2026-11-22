@@ -102,6 +102,15 @@ test("invoice and customer credit accounting is atomic, idempotent, and reversib
         assert.equal(invoiceState.rows[0].status, "PAID");
         assert.equal(Number(invoiceState.rows[0].allocated), 1000);
 
+        const accountingSummary = await accounting.getInvoiceAccountingSummary(merchantId, invoiceId);
+        assert.equal(accountingSummary.totalAmount, 1000);
+        assert.equal(accountingSummary.allocatedAmount, 1000);
+        assert.equal(accountingSummary.outstandingAmount, 0);
+        assert.equal(accountingSummary.allocations.length, 1);
+
+        const customerSummary = await accounting.getCustomerAccountingSummary(merchantId, customerId);
+        assert.equal(customerSummary.availableCredit, 200);
+
         const credit = await pool.query(
             "SELECT available_amount FROM customer_credit_balances WHERE merchant_id = $1 AND customer_id = $2",
             [merchantId, customerId]
