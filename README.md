@@ -85,6 +85,7 @@ Set secrets and deployment-specific values in environment variables or the hosti
 | `ENABLE_API_DOCS` | Set to `true` to expose Swagger in production |
 | `WEBHOOK_BATCH_SIZE` / `WEBHOOK_POLL_INTERVAL_MS` / `WEBHOOK_LEASE_SECONDS` | Webhook worker tuning |
 | `NOTIFICATION_BATCH_SIZE` / `NOTIFICATION_POLL_INTERVAL_MS` / `NOTIFICATION_MAX_ATTEMPTS` / `NOTIFICATION_LEASE_SECONDS` | Notification worker tuning |
+| `PAYMENT_TIMEOUT_SECONDS` / `PAYMENT_TIMEOUT_POLL_INTERVAL_MS` / `PAYMENT_TIMEOUT_BATCH_SIZE` | Pending payment timeout worker tuning |
 | `PORT` | API listening port; Render supplies this value |
 
 See `.env.example` for the variable names used in local development. Use unique, private credentials in your environment and rotate any secret that has been exposed.
@@ -93,7 +94,7 @@ See `.env.example` for the variable names used in local development. Use unique,
 
 The repository's `render.yaml` configures a Render **free web service**. Its build command installs dependencies and applies migrations; its start command is `npm run start:all`, which supervises the API and webhook worker in the same service. Configure the prompted secrets and URLs in Render, including the same `DATABASE_URL` used by the app.
 
-On Render's free plan, the service may sleep when idle. Callback events are persisted before acknowledgement, but processing can be delayed while the service is asleep or restarting. The Render start command does not include the separate notification worker; Docker Compose does include it for local development.
+On Render's free plan, the service may sleep when idle. Callback events are persisted before acknowledgement, but processing can be delayed while the service is asleep or restarting. The Render start command does not include separate notification or timeout workers; Docker Compose includes both for local development.
 
 For a separately configured Render service, use:
 

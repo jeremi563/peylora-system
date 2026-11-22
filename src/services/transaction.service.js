@@ -452,6 +452,51 @@ export async function markInitiationFailed(transactionId, reason, darajaResponse
     }
 }
 
+export async function markExpiredPendingAttempts({ timeoutSeconds, limit = 100 }) {
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) {
+        throw new Error("timeoutSeconds must be a positive integer");
+    }
+    const pool = getDatabasePool();
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const expired = await client.query(
+            `SELECT t.id, t.payment_id
+             FROM transactions t
+             WHERE t.status = 'PENDING'
+               AND t.created_at <= NOW() - ($1 * INTERVAL '1 second')
+             ORDER BY t.created_at
+             LIMIT $2
+             FOR UPDATE OF t SKIP LOCKED`,
+            [timeoutSeconds, limit]
+        );
+
+        for (const attempt of expired.rows) {
+            await client.query(
+                `UPDATE transactions
+                 SET status = 'TIMEOUT',
+                     failure_reason = 'Awaited outcome exceeded the configured timeout',
+                     updated_at = NOW()
+                 WHERE id = $1 AND status = 'PENDING'`,
+                [attempt.id]
+            );
+            await client.query(
+                `UPDATE payments
+                 SET status = 'TIMEOUT', completed_at = NOW(), updated_at = NOW()
+                 WHERE id = $1 AND status = 'PENDING'`,
+                [attempt.payment_id]
+            );
+        }
+        await client.query("COMMIT");
+        return expired.rows.length;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
 export function determineCallbackOutcome(resultCode, metadata, requestedAmount) {
     if (resultCode === 0) {
         const paidAmount = Number(metadata.Amount);
@@ -494,7 +539,7 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
              paid_amount = $6, amount_matches = $7, mpesa_receipt_number = $8,
              provider_transaction_date = $9, paid_from_phone_number = $10,
              failure_reason = $11, updated_at = NOW()
-         WHERE id = $1 AND status = 'PENDING'
+             WHERE id = $1 AND status IN ('PENDING', 'TIMEOUT')
              RETURNING payment_id, amount_matches`,
         [transaction.id, outcome.status, resultCode, callback.ResultDesc ?? null,
             JSON.stringify(metadata), outcome.paidAmount ?? null,
@@ -548,7 +593,7 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
 
     await client.query(
         `UPDATE payments SET status = $2, completed_at = NOW(), updated_at = NOW()
-         WHERE id = $1 AND status = 'PENDING'`,
+         WHERE id = $1 AND status IN ('PENDING', 'TIMEOUT')`,
         [update.rows[0].payment_id, outcome.status]
     );
     if (outcome.status === "SUCCESS" && update.rows[0].amount_matches === true) {
@@ -654,7 +699,7 @@ export async function applyMpesaCallback(callback, metadata) {
         }
 
         const transaction = existing.rows[0];
-        if (transaction.status !== "PENDING") {
+        if (transaction.status !== "PENDING" && transaction.status !== "TIMEOUT") {
             await client.query(
                 `UPDATE webhook_events
                  SET status = 'PROCESSED', processed_at = COALESCE(processed_at, NOW()),
