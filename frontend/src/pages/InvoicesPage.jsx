@@ -298,6 +298,34 @@ export default function InvoicesPage() {
                 <StatusBadge status={selected.status} />
               </div>
             </div>
+            {selected.accounting && (
+              <>
+                <div className="detail-section-title">Accounting</div>
+                <div className="detail-grid">
+                  <div className="detail-item">
+                    <small>Allocated</small>
+                    <strong>{formatKes(selected.accounting.allocatedAmount)}</strong>
+                  </div>
+                  <div className="detail-item">
+                    <small>Outstanding</small>
+                    <strong>{formatKes(selected.accounting.outstandingAmount)}</strong>
+                  </div>
+                </div>
+                {selected.accounting.allocations?.length ? (
+                  selected.accounting.allocations.map((allocation) => (
+                    <div className="transaction-attempt" key={allocation.id}>
+                      <span>
+                        <strong>{allocation.sourceType.replaceAll("_", " ").toLowerCase()}</strong>
+                        <small>{allocation.reversedAt ? "Reversed" : "Active"}</small>
+                      </span>
+                      <strong>{formatKes(allocation.amount)}</strong>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted-copy">No allocations recorded.</p>
+                )}
+              </>
+            )}
             <div className="detail-section-title">Items</div>
             <div className="invoice-detail-items">
               {selected.items?.map((item) => (

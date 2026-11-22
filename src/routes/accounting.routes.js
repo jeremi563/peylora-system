@@ -3,6 +3,8 @@ import { Router } from "express";
 import {
     allocateInvoiceCredit,
     allocateOldestCredit,
+    getCustomerAccounting,
+    getInvoiceAccounting,
     reverseAllocation
 } from "../controllers/accounting.controller.js";
 import { authenticateAccessToken, authorizeRoles } from "../middleware/authentication.js";
@@ -16,6 +18,20 @@ import {
 
 const router = Router();
 const merchantAccess = [authenticateAccessToken, authorizeRoles("MERCHANT")];
+
+router.get(
+    "/api/invoices/:invoiceId/accounting",
+    ...merchantAccess,
+    validateParam(invoiceIdSchema, "invoiceId"),
+    getInvoiceAccounting
+);
+
+router.get(
+    "/api/customers/:customerId/accounting",
+    ...merchantAccess,
+    validateParam(customerIdSchema, "customerId"),
+    getCustomerAccounting
+);
 
 router.post(
     "/api/invoices/:invoiceId/allocate-credit",

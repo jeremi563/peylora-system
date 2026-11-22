@@ -4,6 +4,8 @@ import { getDatabasePool } from "../database.js";
 import {
     allocateCustomerCreditToInvoice,
     allocateCustomerCreditOldest,
+    getCustomerAccountingSummary,
+    getInvoiceAccountingSummary,
     reversePaymentAllocation
 } from "../services/accounting.service.js";
 
@@ -81,6 +83,38 @@ export async function allocateOldestCredit(req, res) {
     } catch (error) {
         console.error("Could not allocate oldest credit:", error.message);
         return res.status(500).json({ success: false, message: "Could not allocate customer credit" });
+    }
+}
+
+export async function getInvoiceAccounting(req, res) {
+    try {
+        const summary = await getInvoiceAccountingSummary(
+            req.auth.merchantId,
+            req.params.invoiceId
+        );
+        if (!summary) {
+            return res.status(404).json({ success: false, message: "Invoice not found" });
+        }
+        return res.json({ success: true, accounting: summary });
+    } catch (error) {
+        console.error("Could not retrieve invoice accounting:", error.message);
+        return res.status(500).json({ success: false, message: "Could not retrieve invoice accounting" });
+    }
+}
+
+export async function getCustomerAccounting(req, res) {
+    try {
+        const summary = await getCustomerAccountingSummary(
+            req.auth.merchantId,
+            req.params.customerId
+        );
+        if (!summary) {
+            return res.status(404).json({ success: false, message: "Customer not found" });
+        }
+        return res.json({ success: true, accounting: summary });
+    } catch (error) {
+        console.error("Could not retrieve customer accounting:", error.message);
+        return res.status(500).json({ success: false, message: "Could not retrieve customer accounting" });
     }
 }
 

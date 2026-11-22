@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
 
 import { getDatabasePool } from "../database.js";
-import { reverseInvoiceAllocations } from "./accounting.service.js";
+import {
+    getInvoiceAccountingSummary,
+    reverseInvoiceAllocations
+} from "./accounting.service.js";
 
 function mapInvoice(row) {
     if (!row) return null;
@@ -150,7 +153,20 @@ export async function getMerchantInvoice(merchantId, invoiceId) {
         [invoiceId, merchantId]
     );
 
-    return mapInvoice(result.rows[0]);
+    const mapped = mapInvoice(result.rows[0]);
+    if (!mapped) return null;
+    const accounting = await getInvoiceAccountingSummary(merchantId, invoiceId);
+    return {
+        ...mapped,
+        accounting: accounting
+            ? {
+                totalAmount: accounting.totalAmount,
+                allocatedAmount: accounting.allocatedAmount,
+                outstandingAmount: accounting.outstandingAmount,
+                allocations: accounting.allocations
+            }
+            : null
+    };
 }
 
 export async function updateInvoiceStatus(merchantId, invoiceId, requestedStatus) {
