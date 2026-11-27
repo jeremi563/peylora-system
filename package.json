@@ -16,6 +16,7 @@
     "test:accounting": "node --test test/accounting.integration.test.js",
     "test:database": "node --test test/database-foundation.integration.test.js",
     "test:timeout": "node --test test/timeout.integration.test.js",
+    "test:reconciliation": "node --test test/reconciliation.integration.test.js",
     "test": "npm run test:unit && npm run test:security && npm run test:integration",
     "frontend:dev": "npm run dev --prefix frontend",
     "frontend:build": "npm run build --prefix frontend"

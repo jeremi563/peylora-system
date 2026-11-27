@@ -19,6 +19,7 @@ import {
     markInitiationFailed,
     markReconciliationRequested,
     IdempotencyConflictError,
+    listReconciliationEvents,
     recordReconciliationResponse,
     saveStkResponse
 } from "../services/transaction.service.js";
@@ -336,6 +337,41 @@ export async function reconcileTransaction(req, res) {
     } catch (error) {
         console.error("Transaction reconciliation failed:", error.response?.data ?? error.message);
         return res.status(502).json({ success: false, message: "Could not query Daraja transaction status" });
+    }
+}
+
+export async function listTransactionReconciliation(req, res) {
+    try {
+        const transaction = await getMerchantTransaction(
+            req.auth.merchantId,
+            req.params.transactionId
+        );
+        if (!transaction) {
+            return res.status(404).json({
+                success: false,
+                message: "Transaction not found"
+            });
+        }
+        const events = await listReconciliationEvents(
+            req.auth.merchantId,
+            req.params.transactionId
+        );
+        return res.json({
+            success: true,
+            reconciliation: {
+                transactionId: req.params.transactionId,
+                settlementStatus: "NOT_ASSESSED",
+                lastResponse: transaction.reconciliation_response,
+                lastRequestedAt: transaction.reconciliation_requested_at,
+                events
+            }
+        });
+    } catch (error) {
+        console.error("Could not list reconciliation evidence:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Could not retrieve reconciliation evidence"
+        });
     }
 }
 
