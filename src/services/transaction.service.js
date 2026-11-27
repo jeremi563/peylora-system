@@ -208,23 +208,91 @@ export async function createPaymentAttempt({
 }
 
 export async function recordReconciliationResponse(transactionId, merchantId, response) {
-    const result = await getDatabasePool().query(
-        `UPDATE transactions
-         SET reconciliation_response = $3,
-             reconciliation_requested_at = NOW(),
-             updated_at = NOW()
-         WHERE id = $1 AND merchant_id = $2
-         RETURNING id`,
-        [transactionId, merchantId, JSON.stringify(response)]
-    );
-    return result.rowCount > 0;
+    const pool = getDatabasePool();
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const transaction = await client.query(
+            `SELECT id, result_code
+             FROM transactions
+             WHERE id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [transactionId, merchantId]
+        );
+        if (!transaction.rowCount) {
+            await client.query("ROLLBACK");
+            return false;
+        }
+
+        const statusCode = Number.isInteger(response?.ResultCode)
+            ? response.ResultCode
+            : (typeof response?.ResultCode === "string" && /^-?\d+$/.test(response.ResultCode)
+                ? Number(response.ResultCode)
+                : null);
+        const callbackCode = transaction.rows[0].result_code;
+        const agreement = callbackCode == null
+            ? "NO_CALLBACK"
+            : (statusCode != null && callbackCode === statusCode ? "MATCH" : "MISMATCH");
+        const eventKey = `reconciliation:${transactionId}:${createHash("sha256")
+            .update(JSON.stringify(response))
+            .digest("hex")}`;
+
+        await client.query(
+            `UPDATE transactions
+             SET reconciliation_response = $3,
+                 reconciliation_requested_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1 AND merchant_id = $2
+             RETURNING id`,
+            [transactionId, merchantId, JSON.stringify(response)]
+        );
+        await client.query(
+            `INSERT INTO reconciliation_events (
+                merchant_id, transaction_id, evidence_type, result_code,
+                callback_result_code, agreement, response_payload, event_key
+             )
+             VALUES ($1, $2, 'STATUS_QUERY', $3, $4, $5, $6, $7)
+             ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+            [
+                merchantId,
+                transactionId,
+                statusCode,
+                callbackCode,
+                agreement,
+                JSON.stringify(response),
+                eventKey
+            ]
+        );
+        await client.query("COMMIT");
+        return true;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
 }
+
+export async function listReconciliationEvents(merchantId, transactionId) {
+    const result = await getDatabasePool().query(
+        `SELECT re.id, re.transaction_id, re.evidence_type, re.result_code,
+                re.callback_result_code, re.agreement, re.response_payload,
+                re.created_at
+         FROM reconciliation_events re
+         JOIN transactions t ON t.id = re.transaction_id AND t.merchant_id = re.merchant_id
+         WHERE re.merchant_id = $1 AND re.transaction_id = $2
+         ORDER BY re.created_at DESC, re.id`,
+        [merchantId, transactionId]
+    );
+    return result.rows;
+}
+
 
 export async function markReconciliationRequested(transactionId, merchantId) {
         const result = await getDatabasePool().query(
                 `UPDATE transactions
                  SET reconciliation_requested_at = NOW(), updated_at = NOW()
-                 WHERE id = $1 AND merchant_id = $2 AND status = 'PENDING'
+                 WHERE id = $1 AND merchant_id = $2 AND status IN ('PENDING', 'TIMEOUT')
                      AND checkout_request_id IS NOT NULL
                  RETURNING checkout_request_id`,
                 [transactionId, merchantId]

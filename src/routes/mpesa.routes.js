@@ -6,6 +6,7 @@ import {
     getTransaction,
     initiateStkPush,
     listPayments,
+    listTransactionReconciliation,
     retryPayment,
     reconcileTransaction,
     receiveMpesaCallback
@@ -64,6 +65,13 @@ router.post(
     authorizeRoles("MERCHANT"),
     validateParam(paymentIdSchema, "transactionId"),
     reconcileTransaction
+);
+router.get(
+    "/api/transactions/:transactionId/reconciliation",
+    authenticateAccessToken,
+    authorizeRoles("MERCHANT"),
+    validateParam(paymentIdSchema, "transactionId"),
+    listTransactionReconciliation
 );
 router.post(
     "/api/mpesa/stk-push",
