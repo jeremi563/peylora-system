@@ -265,6 +265,22 @@ All protected endpoints require a **Bearer token** (JWT access token) obtained f
                         type: "string",
                         enum: ["CREATED", "PENDING", "SUCCESS", "FAILED", "CANCELLED", "TIMEOUT"]
                     },
+                    fulfillment: {
+                        type: "object",
+                        description: "Cumulative fulfillment of the fixed Payment Request, separate from the legacy attempt-oriented status.",
+                        required: ["status", "amountReceived"],
+                        properties: {
+                            status: {
+                                type: "string",
+                                enum: ["UNFULFILLED", "PARTIALLY_FULFILLED", "FULFILLED"]
+                            },
+                            amountReceived: {
+                                type: "number",
+                                minimum: 0,
+                                description: "Sum of unique successful Provider Transaction amounts; may exceed the requested amount."
+                            }
+                        }
+                    },
                     checkoutRequestId: { type: "string", nullable: true, example: "ws_CO_03102026080512345678" },
                     merchantRequestId: { type: "string", nullable: true, example: "12345-67890-1" },
                     mpesaReceiptNumber: { type: "string", nullable: true, example: "QHX1Y2Z3A4" },

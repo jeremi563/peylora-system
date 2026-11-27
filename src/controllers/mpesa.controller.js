@@ -20,6 +20,7 @@ import {
     markInitiationFailed,
     markReconciliationRequested,
     IdempotencyConflictError,
+    PaymentRequestFulfilledError,
     listReconciliationEvents,
     recordReconciliationResponse,
     saveStkResponse
@@ -208,6 +209,9 @@ async function initiatePayment(req, res, {
         if (error instanceof IdempotencyConflictError) {
             return res.status(409).json({ message: error.message });
         }
+        if (error instanceof PaymentRequestFulfilledError) {
+            return res.status(409).json({ message: error.message });
+        }
         const details = error.response?.data;
         if (transaction && (!stkRequestDispatched || error.response)) {
             try {
@@ -301,10 +305,10 @@ export async function retryPayment(req, res) {
             message: "A pending attempt already exists for this payment request"
         });
     }
-    if (payment.status === "SUCCESS") {
+    if (payment.fulfillment.status === "FULFILLED") {
         return res.status(409).json({
             success: false,
-            message: "A successful payment request cannot be retried"
+            message: "A fulfilled payment request cannot accept another collection"
         });
     }
     if (payment.status === "TIMEOUT") {

@@ -271,6 +271,8 @@ The amount must be a positive whole number of Kenyan shillings. Response: `202 A
 GET /api/payments
 ```
 
+Each payment includes an additive `fulfillment` object with `status` (`UNFULFILLED`, `PARTIALLY_FULFILLED`, or `FULFILLED`) and cumulative `amountReceived`. This is derived from unique successful Provider Transactions and is separate from the existing attempt-oriented `status` field.
+
 Query parameters:
 
 | Parameter | Description |
@@ -289,13 +291,15 @@ GET /api/payments/:paymentId
 
 Returns one merchant-owned payment and its associated details.
 
+The response includes the same additive `fulfillment` object; the existing `status` field remains unchanged.
+
 ### Retry a payment
 
 ```http
 POST /api/payments/:paymentId/retry
 ```
 
-Requires a new `Idempotency-Key` for each deliberate retry on `/api/v1`. Repeating that key returns the original retry attempt. A `TIMEOUT` attempt cannot be retried until its outcome is resolved; legacy keyless requests follow the configured 90-day grace period.
+Requires a new `Idempotency-Key` for each deliberate retry on `/api/v1`. Repeating that key returns the original retry attempt. A partially fulfilled request may be retried after its latest attempt is terminal; each retry still requests the fixed Payment Request amount. A fulfilled request rejects further collection. A `TIMEOUT` attempt cannot be retried until its outcome is resolved; legacy keyless requests follow the configured 90-day grace period.
 
 ### Get a transaction
 
