@@ -24,6 +24,18 @@ export function validateEnvironment() {
         throw new Error("RATE_LIMIT_REDIS_URL must be configured for shared production rate limits");
     }
 
+    const idempotencyGraceStart = process.env.PAYMENT_IDEMPOTENCY_LEGACY_GRACE_START;
+    if (idempotencyGraceStart) {
+        const parsedDate = Date.parse(`${idempotencyGraceStart}T00:00:00.000Z`);
+        if (
+            !/^\d{4}-\d{2}-\d{2}$/.test(idempotencyGraceStart)
+            || !Number.isFinite(parsedDate)
+            || new Date(parsedDate).toISOString().slice(0, 10) !== idempotencyGraceStart
+        ) {
+            throw new Error("PAYMENT_IDEMPOTENCY_LEGACY_GRACE_START must be a valid YYYY-MM-DD date");
+        }
+    }
+
     if (process.env.TRUST_PROXY_HOPS !== undefined) {
         const hops = Number(process.env.TRUST_PROXY_HOPS);
         if (!Number.isInteger(hops) || hops < 1 || hops > 5) {

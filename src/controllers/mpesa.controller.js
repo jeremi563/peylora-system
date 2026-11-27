@@ -12,6 +12,7 @@ import {
 import {
     createPaymentAttempt,
     createPendingTransaction,
+    findIdempotentRetry,
     getMerchantPayment,
     getMerchantTransaction,
     getRetryableMerchantPayment,
@@ -24,6 +25,60 @@ import {
     saveStkResponse
 } from "../services/transaction.service.js";
 import { enqueueMpesaCallback } from "../services/webhook.service.js";
+
+const LEGACY_IDEMPOTENCY_GRACE_MS = 90 * 24 * 60 * 60 * 1000;
+
+function getPaymentIdempotencyKey(req, res) {
+    const key = req.get("Idempotency-Key")?.trim();
+    if (key && !/^[\x21-\x7E]{1,128}$/.test(key)) {
+        res.status(400).json({ message: "Idempotency-Key must be 1-128 visible ASCII characters" });
+        return { rejected: true };
+    }
+
+    if (key) {
+        return { key };
+    }
+
+    const requestPath = req.originalUrl?.split("?")[0] ?? req.url;
+    if (/^\/api\/v1(?:\/|$)/.test(requestPath)) {
+        res.status(400).json({ message: "Idempotency-Key is required for versioned payment requests" });
+        return { rejected: true };
+    }
+
+    console.info("Legacy keyless payment request observed", {
+        route: req.route?.path ?? "payment initiation"
+    });
+    const graceStart = process.env.PAYMENT_IDEMPOTENCY_LEGACY_GRACE_START;
+    if (graceStart) {
+        const start = Date.parse(`${graceStart}T00:00:00.000Z`);
+        if (
+            !/^\d{4}-\d{2}-\d{2}$/.test(graceStart)
+            || !Number.isFinite(start)
+            || new Date(start).toISOString().slice(0, 10) !== graceStart
+        ) {
+            throw new Error("PAYMENT_IDEMPOTENCY_LEGACY_GRACE_START must be a valid YYYY-MM-DD date");
+        }
+
+        if (Date.now() >= start + LEGACY_IDEMPOTENCY_GRACE_MS) {
+            res.status(400).json({ message: "Idempotency-Key is required for payment requests" });
+            return { rejected: true };
+        }
+    }
+
+    return { key: null };
+}
+
+function sendReusedPaymentResponse(res, transaction) {
+    return res.status(200).json({
+        message: "Existing payment operation returned; no additional STK push was sent",
+        transactionId: transaction._id?.toString(),
+        paymentId: transaction.paymentId,
+        accountReference: transaction.accountReference,
+        checkoutRequestId: transaction.checkoutRequestId,
+        status: transaction.status,
+        reused: true
+    });
+}
 
 export function getHome(req, res) {
     res.json({
@@ -39,7 +94,7 @@ async function initiatePayment(req, res, {
     paymentLinkId,
     invoiceId,
     existingPaymentId,
-    idempotencyKey: fixedIdempotencyKey
+    idempotencyKey
 }) {
     const requestBody = req.validatedBody ?? req.body ?? {};
     const amount = fixedAmount ?? requestBody.amount;
@@ -66,11 +121,6 @@ async function initiatePayment(req, res, {
     }
 
     const accountReference = randomBytes(6).toString("hex").toUpperCase();
-    const idempotencyKey = fixedIdempotencyKey ?? req.get("Idempotency-Key")?.trim();
-    if (idempotencyKey && !/^[\x21-\x7E]{1,128}$/.test(idempotencyKey)) {
-        return res.status(400).json({ message: "Idempotency-Key must be 1-128 visible ASCII characters" });
-    }
-
     let transaction;
     let stkRequestDispatched = false;
 
@@ -104,15 +154,7 @@ async function initiatePayment(req, res, {
         }
 
         if (transaction.reused) {
-            return res.status(200).json({
-                message: "Existing payment request returned; no additional STK push was sent",
-                transactionId: transaction._id?.toString(),
-                paymentId: transaction.paymentId,
-                accountReference: transaction.accountReference,
-                checkoutRequestId: transaction.checkoutRequestId,
-                status: transaction.status,
-                reused: true
-            });
+            return sendReusedPaymentResponse(res, transaction);
         }
 
         const accessToken = await getAccessToken();
@@ -193,14 +235,17 @@ async function initiatePayment(req, res, {
 }
 
 export function initiateStkPush(req, res) {
-    return initiatePayment(req, res, { merchantId: req.auth.merchantId });
+    const idempotency = getPaymentIdempotencyKey(req, res);
+    if (idempotency.rejected) return undefined;
+    return initiatePayment(req, res, {
+        merchantId: req.auth.merchantId,
+        idempotencyKey: idempotency.key
+    });
 }
 
 export function initiatePaymentLinkPayment(req, res, link) {
-    const clientKey = req.get("Idempotency-Key")?.trim();
-    if (clientKey && !/^[\x21-\x7E]{1,128}$/.test(clientKey)) {
-        return res.status(400).json({ message: "Idempotency-Key must be 1-128 visible ASCII characters" });
-    }
+    const idempotency = getPaymentIdempotencyKey(req, res);
+    if (idempotency.rejected) return undefined;
 
     return initiatePayment(req, res, {
         merchantId: link.merchant_id,
@@ -208,15 +253,13 @@ export function initiatePaymentLinkPayment(req, res, link) {
         description: link.description,
         paymentLinkId: link.id,
         invoiceId: link.invoice_id,
-        idempotencyKey: clientKey ? `link:${link.id}:${clientKey}` : undefined
+        idempotencyKey: idempotency.key ? `link:${link.id}:${idempotency.key}` : null
     });
 }
 
 export async function retryPayment(req, res) {
-    const clientKey = req.get("Idempotency-Key")?.trim();
-    if (clientKey && !/^[\x21-\x7E]{1,128}$/.test(clientKey)) {
-        return res.status(400).json({ message: "Idempotency-Key must be 1-128 visible ASCII characters" });
-    }
+    const idempotency = getPaymentIdempotencyKey(req, res);
+    if (idempotency.rejected) return undefined;
 
     const payment = await getRetryableMerchantPayment(
         req.auth.merchantId,
@@ -228,6 +271,30 @@ export async function retryPayment(req, res) {
             message: "Payment request not found"
         });
     }
+
+    if (idempotency.key) {
+        try {
+            const reused = await findIdempotentRetry({
+                merchantId: req.auth.merchantId,
+                paymentId: payment.id,
+                idempotencyKey: idempotency.key,
+                amount: Number(payment.amount),
+                phoneNumber: payment.phone_number,
+                description: payment.description,
+                paymentLinkId: payment.payment_link_id,
+                invoiceId: payment.invoice_id
+            });
+            if (reused) {
+                return sendReusedPaymentResponse(res, reused);
+            }
+        } catch (error) {
+            if (error instanceof IdempotencyConflictError) {
+                return res.status(409).json({ message: error.message });
+            }
+            throw error;
+        }
+    }
+
     if (payment.status === "PENDING") {
         return res.status(409).json({
             success: false,
@@ -240,6 +307,12 @@ export async function retryPayment(req, res) {
             message: "A successful payment request cannot be retried"
         });
     }
+    if (payment.status === "TIMEOUT") {
+        return res.status(409).json({
+            success: false,
+            message: "A timed-out payment attempt must be resolved before retry"
+        });
+    }
 
     return initiatePayment(req, res, {
         merchantId: req.auth.merchantId,
@@ -249,9 +322,7 @@ export async function retryPayment(req, res) {
         paymentLinkId: payment.payment_link_id,
         invoiceId: payment.invoice_id,
         existingPaymentId: payment.id,
-        idempotencyKey: clientKey
-            ? `retry:${payment.id}:${clientKey}`
-            : `retry:${payment.id}:${randomBytes(12).toString('hex')}`
+        idempotencyKey: idempotency.key
     });
 }
 

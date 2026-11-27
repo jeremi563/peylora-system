@@ -255,11 +255,13 @@ Request body:
 }
 ```
 
-Optional header:
+Required on `/api/v1` routes:
 
 ```http
 Idempotency-Key: order-1042-payment
 ```
+
+The same key and request replay the original Payment Request and Payment Attempt without sending another STK push. Reusing the key with a different request or operation returns `409 Conflict`. `/api` legacy routes accept and log keyless requests until the deprecation announcement is made. Set `PAYMENT_IDEMPOTENCY_LEGACY_GRACE_START` to that UTC date to reject keyless requests after the 90-day grace period.
 
 The amount must be a positive whole number of Kenyan shillings. Response: `202 Accepted` when Daraja accepts the STK request. The final status arrives asynchronously through the callback and webhook worker.
 
@@ -286,6 +288,14 @@ GET /api/payments/:paymentId
 ```
 
 Returns one merchant-owned payment and its associated details.
+
+### Retry a payment
+
+```http
+POST /api/payments/:paymentId/retry
+```
+
+Requires a new `Idempotency-Key` for each deliberate retry on `/api/v1`. Repeating that key returns the original retry attempt. A `TIMEOUT` attempt cannot be retried until its outcome is resolved; legacy keyless requests follow the configured 90-day grace period.
 
 ### Get a transaction
 
@@ -451,7 +461,7 @@ Public and rate-limited. Request body:
 }
 ```
 
-Optional `Idempotency-Key` prevents duplicate payment attempts for the same public link.
+On `/api/v1`, `Idempotency-Key` is required. Reuse it for transport retries of the same payment intent; a deliberate new attempt requires a new key. Legacy `/api` requests follow the same 90-day keyless grace period as merchant payment initiation.
 
 ### Get public payment status
 

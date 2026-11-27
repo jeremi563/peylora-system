@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, CheckCircle2, Clock3, LockKeyhole, Smartphone, TriangleAlert } from "lucide-react";
 import { useParams } from "react-router-dom";
 
@@ -16,6 +16,7 @@ export default function PublicPaymentPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const paymentIntent = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -44,12 +45,18 @@ export default function PublicPaymentPage() {
     setBusy(true);
     setError("");
     setNotice("");
+    const fingerprint = JSON.stringify({ reference, phoneNumber });
+    if (paymentIntent.current?.fingerprint !== fingerprint) {
+      paymentIntent.current = { fingerprint, key: crypto.randomUUID() };
+    }
+
     try {
       const result = await apiRequest(`/api/public/payment-links/${reference}/pay`, {
         method: "POST",
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": paymentIntent.current.key },
         body: JSON.stringify({ phoneNumber })
       }, false);
+      paymentIntent.current = null;
       setPayment({ id: result.paymentId, status: result.status, amount: link.amount, currency: link.currency });
       setNotice("The request has been sent. Check your phone and enter your M-Pesa PIN.");
     } catch (requestError) { setError(requestError.message); }
@@ -60,7 +67,8 @@ export default function PublicPaymentPage() {
   if (!link) return <div className="public-loading"><section className="public-card"><span className="public-brand">peyflow <i>PAY</i></span><div className="public-state-icon state-failed"><TriangleAlert size={25} /></div><h1>Payment link unavailable</h1><p>{error || "This link may have expired or been deactivated."}</p></section></div>;
 
   const successful = payment?.status === "SUCCESS";
-  const failed = payment && ["FAILED", "CANCELLED", "TIMEOUT"].includes(payment.status);
+  const failed = payment && ["FAILED", "CANCELLED"].includes(payment.status);
+  const uncertain = payment?.status === "TIMEOUT";
 
   return (
     <div className="public-payment-page">
@@ -72,7 +80,7 @@ export default function PublicPaymentPage() {
         <div className="public-amount">{formatKes(link.amount, link.currency)}</div>
         <div className="public-divider" />
 
-        {successful ? <div className="public-result"><div className="public-state-icon state-success"><CheckCircle2 size={27} /></div><h1>Payment received</h1><p>Your payment is confirmed.</p><div className="public-result-line"><span>Status</span><StatusBadge status={payment.status} /></div>{payment.receiptNumber && <div className="public-result-line"><span>M-Pesa receipt</span><strong>{payment.receiptNumber}</strong></div>}</div> : failed ? <div className="public-result"><div className="public-state-icon state-failed"><TriangleAlert size={27} /></div><h1>Payment {payment.status.toLowerCase()}</h1><p>{payment.resultDescription || "The payment was not completed."}</p><button className="button button-secondary public-retry" type="button" onClick={() => { setPayment(null); setNotice(""); }}>Try again</button></div> : payment ? <div className="public-result"><div className="public-state-icon state-pending"><Clock3 size={27} /></div><h1>Waiting for payment</h1><p>{notice || "Check your phone and approve the M-Pesa prompt."}</p><div className="public-result-line"><span>Status</span><StatusBadge status={payment.status} /></div><small className="polling-label">Updating payment status automatically</small></div> : <form className="public-pay-form" onSubmit={submit}>
+        {successful ? <div className="public-result"><div className="public-state-icon state-success"><CheckCircle2 size={27} /></div><h1>Payment received</h1><p>Your payment is confirmed.</p><div className="public-result-line"><span>Status</span><StatusBadge status={payment.status} /></div>{payment.receiptNumber && <div className="public-result-line"><span>M-Pesa receipt</span><strong>{payment.receiptNumber}</strong></div>}</div> : failed ? <div className="public-result"><div className="public-state-icon state-failed"><TriangleAlert size={27} /></div><h1>Payment {payment.status.toLowerCase()}</h1><p>{payment.resultDescription || "The payment was not completed."}</p><button className="button button-secondary public-retry" type="button" onClick={() => { paymentIntent.current = null; setPayment(null); setNotice(""); }}>Try again</button></div> : uncertain ? <div className="public-result"><div className="public-state-icon state-pending"><Clock3 size={27} /></div><h1>Payment status uncertain</h1><p>We could not confirm the outcome. The payment may still complete; do not start another payment yet.</p><div className="public-result-line"><span>Status</span><StatusBadge status={payment.status} /></div></div> : payment ? <div className="public-result"><div className="public-state-icon state-pending"><Clock3 size={27} /></div><h1>Waiting for payment</h1><p>{notice || "Check your phone and approve the M-Pesa prompt."}</p><div className="public-result-line"><span>Status</span><StatusBadge status={payment.status} /></div><small className="polling-label">Updating payment status automatically</small></div> : <form className="public-pay-form" onSubmit={submit}>
           <label htmlFor="customer-phone">M-Pesa phone number</label>
           <div className="public-phone-input"><span>KE +254</span><input id="customer-phone" autoFocus inputMode="numeric" pattern="254[17][0-9]{8}" required value={phoneNumber} onChange={(event) => setPhoneNumber(event.target.value)} placeholder="2547XXXXXXXX" /></div>
           <p className="public-input-hint"><Smartphone size={14} /> Enter the number that will receive the STK prompt.</p>
