@@ -88,7 +88,7 @@ It was accepted because it matches the existing requirements and preserves the c
 - Existing combined records may require future migration or compatibility work.
 - Consumers of payment history must distinguish a collection request from its attempts and provider transactions.
 
-## Scope limitations
+## Original scope limitations at initial approval
 
 This ADR does not decide:
 
@@ -100,3 +100,15 @@ This ADR does not decide:
 - Idempotency-key storage, retry endpoint behaviour or physical database design.
 - Physical database tables, columns, indexes or migrations.
 - Generic provider abstractions or additional payment providers for the initial implementation.
+
+## Approved v0.2.0 amendment
+
+The limitations above record what was undecided at the time of initial approval. The v0.2.0 reliability decisions now address the following points without changing the original concept separation:
+
+- Payment Request fulfillment is cumulative across unique, confirmed Provider Transaction amounts and remains distinct from individual Payment Attempt outcomes and Invoice fulfillment.
+- A Payment Request has at most one unresolved Payment Attempt at a time. A TIMEOUT is not proof of failure; retry requires a final documented provider status result or an authorized, audited operator resolution.
+- A final documented status-query outcome may establish a Provider Transaction. Transient or unrecognized responses do not resolve an attempt.
+- Conflicting callback and provider evidence is retained as a reconciliation exception. It must not silently overwrite Provider Transaction or accounting history.
+- Payment Link lifecycle and idempotent-dispatch details are defined in ADR-005 and ADR-003 respectively. ADR-002 continues to govern allocation and Customer Credit.
+
+The detailed decisions, alternatives, and operational consequences are recorded in ADR-003, ADR-004, and ADR-005. This amendment does not change the cardinalities or concept distinctions approved in ADR-001.

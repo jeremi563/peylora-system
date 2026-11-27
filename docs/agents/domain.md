@@ -136,6 +136,8 @@ A Payment Attempt may experience multiple operational events. A callback or prov
 
 An unsuccessful initiation may remain without a Provider Transaction. It must not be inferred as a successful provider outcome merely because callback or status evidence is unavailable.
 
+Payment Request fulfillment is separate from individual attempt outcomes. Confirmed amounts from its Provider Transactions count cumulatively toward the fixed requested amount. A fulfilled Payment Request must not accept further collections.
+
 Provider outcome and collection satisfaction are separate:
 
 - Provider success means the provider confirmed a successful transaction.
@@ -149,11 +151,12 @@ A Payment Link exposes an existing Payment Request. It is not a payment or trans
 
 - A standalone link points to a standalone Payment Request.
 - An invoice-linked link points to a Payment Request associated with that invoice.
-- Reusable links point to the same Payment Request and can expose repeated attempts.
+- Each Payment Link points to one Payment Request. Reusable links allow additional Payment Attempts while the request remains unfulfilled; new links default to reusable.
+- A single-use link is consumed after the first confirmed successful Provider Transaction, even if the amount received does not fulfill the request. Failed or cancelled attempts do not consume it.
 - Reusable collection templates that generate separate per-Customer requests are outside the initial scope.
 - A satisfied, expired or disabled request must not accept further collections.
 - A link can be disabled independently of the underlying Payment Request; disabling or expiring a link does not establish that the request itself is disabled or expired.
-- Exact single-use semantics remain unresolved. The link's behaviour after a successful payment must be decided explicitly rather than inferred from request satisfaction.
+- An uncertain TIMEOUT does not permit a new attempt until a final provider status result or authorized operator resolution. If there is no provider identifier for a status query, operator review is required.
 
 ## Financial integrity
 
@@ -166,6 +169,8 @@ Every financial operation must preserve:
 - Unapplied Customer Credit
 
 Duplicate provider callbacks must not create duplicate financial records, allocations or credits. Financial processing must be idempotent and transactionally consistent.
+
+Conflicting callback and provider-verification evidence must be retained as a reconciliation exception. It must not silently overwrite a Provider Transaction or its financial effects. Callback result-code comparison remains distinct from cryptographic callback authentication and does not independently verify callback amount or receipt data.
 
 Provider success does not prove:
 
@@ -181,45 +186,41 @@ The existing application partially represents this model. It is important not to
 
 | Concept or rule | Existing implementation | Current gap |
 |---|---|---|
-| Payment Request | `payments` stores amount, status, phone, merchant and optional invoice/link associations. | Request, aggregate status and payment attempt are conflated. |
-| Payment Attempt | `transactions` is created during STK initiation and stores checkout identifiers. | It combines attempt and provider outcome; normal retries do not create another transaction under an existing payment. |
-| Provider Transaction | `transactions` stores callback result, receipt, paid amount and `amount_matches`. | Provider outcome and collection allocation are not separated. |
-| Invoice | `invoices` and `invoice_items` exist; totals are calculated from line items. | `PARTIALLY_PAID` is missing; status is not allocation-derived. |
-| Partial payments | Payments can reference an invoice. | No allocation or outstanding-balance ledger exists. |
-| Overpayments/credit | Mismatched received amounts are retained in `paid_amount`. | No Customer Credit balance or allocation record exists. |
-| Payment Link | `payment_links` points to an optional payment and optional invoice. | Public links create normal payment records; single-use/reusable request semantics are incomplete. |
-| Incoming provider callback processing | Daraja callbacks are persisted in `webhook_events` with a unique checkout event key and processed transactionally. | Callback authenticity/signatures are not implemented; this table does not represent outgoing merchant webhooks. |
-| Timeout | `TIMEOUT` appears in database enums and UI/API schemas. | No timeout scheduler or lifecycle transition creates this state. |
-| Settlement | No settlement entity exists. | Settlement and settlement reports are missing. |
-| Reconciliation | The reconcile endpoint queries Daraja and stores the response. | It does not change status, match allocations or settlement records, or detect financial discrepancies. |
+| Payment Request | `payments` stores collection intent and compatibility status; successful Provider Transactions feed accounting. | Status is written from attempt outcomes, not cumulative fulfillment. |
+| Payment Attempt | `transactions` stores one STK initiation and its checkout identifiers; retries create additional rows. | Retry idempotency is not persisted; the retry guard is outside the locking transaction and can race. |
+| Provider Transaction | `provider_transactions` stores at most one outcome per attempt, with a unique attempt constraint. | Callback verification cross-checks `ResultCode` only; amount and receipt evidence are not independently compared. |
+| Invoice | Invoice totals and `PARTIALLY_PAID` exist; accounting recalculates allocated and outstanding amounts. | `OVERDUE` versus `PARTIALLY_PAID` precedence remains unresolved. |
+| Partial payments | Successful Provider Transactions allocate up to the linked invoice's outstanding balance. | No separate Payment Request cumulative-fulfillment projection exists. |
+| Overpayments/credit | Excess is recorded as Customer Credit or unassigned received funds; ledger operations are transactional and idempotent. | Unassigned-funds identification and some credit-adjustment policies remain unresolved. |
+| Payment Link | Links can be activated, deactivated and expired; each current public pay call creates a new `payments` row. | No explicit use mode or stable request binding is enforced in the public flow; link-level concurrent-use protection is absent. |
+| Incoming provider callback processing | Callbacks are persisted in `webhook_events`, deduplicated by checkout ID and processed by a PostgreSQL-backed worker. Callback processing queries Daraja and compares result codes. | Callback is not cryptographically authenticated; callback amount/receipt are not independently verified; query evidence used during callback processing is not retained alongside the callback. |
+| Timeout | A PostgreSQL polling worker moves aged `PENDING` attempts to `TIMEOUT`; late callbacks may still update them. | A lost STK response may leave no CheckoutRequestID, so it cannot be queried; retry currently does not require resolution. |
+| Settlement | No settlement entity exists. | Settlement records and settlement reconciliation are absent and deferred from v0.2. |
+| Reconciliation | Status-query responses are stored append-only and classified `MATCH`, `MISMATCH` or `NO_CALLBACK`. | The manual endpoint does not resolve attempt state; there are no settlement records or provider-evidence conflict exceptions. |
 
 Verified implementation references:
 
 - Core tables: `migrations/001_initial_schema.sql:36-121`
 - Invoice/payment associations: `migrations/007_invoice_payment_associations.sql:1-8`
-- STK and payment creation: `src/controllers/mpesa.controller.js:23-141`
-- Request and transaction persistence: `src/services/transaction.service.js:19-111`
-- Callback amount and state handling: `src/services/transaction.service.js:369-453`
-- Callback matching and deduplication: `src/services/transaction.service.js:490-557`
-- Invoice total and status operations: `src/services/invoice.service.js:12-199`
-- Invoice-link creation: `src/services/invoice.service.js:220-252`
-- Payment-link public collection: `src/controllers/payment-link.controller.js:83-113`
+- STK initiation and retries: `src/controllers/mpesa.controller.js:34-253`
+- Request and attempt persistence: `src/services/transaction.service.js:20-208`
+- Callback outcome and accounting: `src/services/transaction.service.js:575-724`
+- Callback verification and event handling: `src/services/transaction.service.js:726-830`, `src/services/webhook.service.js:9-39`
+- Invoice creation, accounting, and status operations: `src/services/invoice.service.js:20-229`
+- Invoice-link creation: `src/services/invoice.service.js:230-280`
+- Payment-link public collection: `src/controllers/payment-link.controller.js:81-96`
 
 ## Open Domain Questions
 
 - Can one Payment Request ever be associated with multiple invoices?
 - Can a Merchant amend a Payment Request amount after creation?
-- How should Customer Credit be created, applied to another obligation, refunded or audited?
+- How should Customer Credit be adjusted or audited, and how can unassigned received funds be identified and reassigned?
 - What lifecycle should be used for pending attempts when an invoice is cancelled or expires?
 - Which lifecycle status takes precedence when an overdue Invoice is also partially paid?
-- How are exact expiry and disabled/request-satisfied rules enforced for each Payment Link?
-- What are the exact single-use completion and reuse semantics for a Payment Link?
-- How should late provider callbacks be treated after an attempt has timed out?
-- How should concurrent successful payments be allocated to an invoice?
-- When may a partial or overpayment be considered collection satisfaction versus a disputed/mismatch state?
+- What exact expiry and disabled-link rules apply independently of Payment Request fulfillment?
 - Which provider or banking record is authoritative for Settlement?
-- How will reconciliation distinguish callback data, provider status queries and settlement records?
-- Should a standalone Payment Request be allowed to produce a reusable link template or only a single-use link?
+
+The approved v0.2 decisions are recorded in ADR-001 and ADR-003–005: cumulative Payment Request fulfillment, explicit single-use/reusable Payment Link modes, status-query resolution of documented terminal outcomes, operator review for unqueryable uncertain dispatches, and append-only handling of conflicting evidence. These decisions are not yet enforced by the current implementation.
 
 ## Flag ADR conflicts
 

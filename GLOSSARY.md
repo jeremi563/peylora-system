@@ -24,6 +24,8 @@ The process of requesting or receiving money from a customer through an accepted
 
 A Merchant's request to collect a fixed amount. It may have an intended Customer, but Customer association is not required. A Payment Request may be standalone or associated with an Invoice. Multiple Payment Attempts may belong to one Payment Request.
 
+Payment Request fulfillment is separate from the outcome of any one Payment Attempt. Confirmed amounts received across its Provider Transactions count cumulatively toward the requested amount. A Payment Request is fulfilled when those amounts meet or exceed the requested amount.
+
 ## Invoice
 
 A formal billing document identifying the Customer, billed items, total amount, due date and outstanding financial position.
@@ -35,6 +37,8 @@ An Invoice can have multiple Payment Requests. Its balance reflects the amount a
 An individual collection initiation associated with a Payment Request. Each STK initiation creates a separate Payment Attempt, with its own provider identifiers and operational events. Cancelled and failed attempts remain in history.
 
 An unsuccessful initiation or network timeout does not necessarily produce a Provider Transaction.
+
+An uncertain timed-out Payment Attempt is not evidence of non-payment. It may be retried after a final provider status result or an authorized operator resolution. If there is no provider identifier that permits a status query, operator review is required before retry.
 
 ## Provider Transaction
 
@@ -56,11 +60,11 @@ An amount received from a Customer that remains after satisfying one or more col
 
 A collection interface for a Payment Request. A Payment Link can expose a standalone or invoice-linked Payment Request and can be configured for single-use or reusable collection.
 
-Reusable links point to the same Payment Request rather than creating separate Payment Requests.
+Each Payment Link points to one Payment Request. Reusable links allow additional Payment Attempts while that request remains unfulfilled. A single-use link is consumed after the first confirmed successful Provider Transaction, even if the amount received does not fulfill the request. New links default to reusable.
 
 A Payment Link can be disabled independently of its associated Payment Request. Link expiration also does not by itself establish whether the underlying request expires.
 
-Exact single-use completion, reuse and subsequent collection semantics remain unresolved.
+Failed or cancelled attempts do not consume a single-use link. A fulfilled Payment Request must not accept further collections.
 
 ## Webhook Event
 
