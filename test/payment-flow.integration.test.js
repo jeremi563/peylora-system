@@ -263,7 +263,12 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         assert.equal(afterDuplicate.rows[0].count, 2);
     } finally {
         axios.defaults.adapter = originalAdapter;
-        if (server) await new Promise((resolve) => server.close(resolve));
+        if (server) {
+            if (typeof server.closeAllConnections === "function") {
+                server.closeAllConnections();
+            }
+            await new Promise((resolve) => server.close(resolve));
+        }
         if (eventKey) {
             await pool.query("DELETE FROM notifications WHERE event_key = $1", [eventKey]);
             await pool.query("DELETE FROM audit_logs WHERE event_key = $1", [eventKey]);
