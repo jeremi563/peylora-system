@@ -80,6 +80,7 @@ test("security middleware sets headers, restricts CORS, caps JSON bodies, and ap
             assert.equal(callback.status, 200);
         }
     } finally {
+        if (typeof server.closeAllConnections === "function") server.closeAllConnections();
         await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         await closeDatabase();
     }
@@ -117,6 +118,7 @@ test("production requires explicit frontend/proxy configuration and HTTP is reje
         response = await fetch(`${base}/`, { headers: { "X-Forwarded-Proto": "https" } });
         assert.equal(response.status, 200);
     } finally {
+        if (typeof server.closeAllConnections === "function") server.closeAllConnections();
         await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         app.set("trust proxy", false);
         process.env.NODE_ENV = previous.nodeEnv;
