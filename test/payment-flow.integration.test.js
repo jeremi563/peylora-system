@@ -29,6 +29,7 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
     let server;
     let merchantId;
     let paymentId;
+    let partialPaymentId;
     let transactionId;
     let paymentLinkId;
     let checkoutRequestId;
@@ -253,7 +254,12 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
             headers: { authorization: `Bearer ${session.accessToken}` }
         });
         assert.equal(response.status, 200);
-        assert.equal((await response.json()).payment.status, "SUCCESS");
+        const paymentResponse = await response.json();
+        assert.equal(paymentResponse.payment.status, "SUCCESS");
+        assert.deepEqual(paymentResponse.payment.fulfillment, {
+            status: "FULFILLED",
+            amountReceived: 245
+        });
 
         const dashboard = await analytics.getMerchantDashboard(merchantId, {
             from: new Date().toISOString().slice(0, 10),
@@ -319,12 +325,65 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
             headers: { authorization: `Bearer ${session.accessToken}` }
         });
         assert.equal(response.status, 409);
-        assert.equal((await response.json()).message, "A successful payment request cannot be retried");
+        assert.equal(
+            (await response.json()).message,
+            "A fulfilled payment request cannot accept another collection"
+        );
         const afterDuplicate = await pool.query(
             "SELECT COUNT(*)::integer AS count FROM notifications WHERE event_key = $1",
             [eventKey]
         );
         assert.equal(afterDuplicate.rows[0].count, 2);
+
+        partialPaymentId = (await pool.query(
+            `INSERT INTO payments (merchant_id, reference, amount, phone_number, status)
+             VALUES ($1, $2, 100, '254700001234', 'SUCCESS')
+             RETURNING id`,
+            [merchantId, `PAY-PARTIAL-${randomUUID()}`]
+        )).rows[0].id;
+        const partialAttemptId = (await pool.query(
+            `INSERT INTO transactions (
+                payment_id, merchant_id, account_reference, amount, phone_number, provider, status
+             )
+             VALUES ($1, $2, $3, 100, '254700001234', 'MPESA', 'SUCCESS')
+             RETURNING id`,
+            [partialPaymentId, merchantId, `ATT-PARTIAL-${randomUUID()}`]
+        )).rows[0].id;
+        await pool.query(
+            `INSERT INTO provider_transactions (
+                merchant_id, attempt_transaction_id, provider, outcome,
+                provider_reference, received_amount, evidence_type, evidence_event_key
+             )
+             VALUES ($1, $2, 'MPESA', 'SUCCESS', $3, 40, 'CALLBACK', $4)`,
+            [
+                merchantId,
+                partialAttemptId,
+                `RECEIPT-PARTIAL-${randomUUID()}`,
+                `evidence-partial-${randomUUID()}`
+            ]
+        );
+
+        response = await fetch(`${baseUrl}/api/payments/${partialPaymentId}`, {
+            headers: { authorization: `Bearer ${session.accessToken}` }
+        });
+        assert.equal(response.status, 200);
+        const partialPaymentResponse = await response.json();
+        assert.equal(partialPaymentResponse.payment.status, "SUCCESS");
+        assert.deepEqual(partialPaymentResponse.payment.fulfillment, {
+            status: "PARTIALLY_FULFILLED",
+            amountReceived: 40
+        });
+
+        response = await fetch(`${baseUrl}/api/v1/payments/${partialPaymentId}/retry`, {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${session.accessToken}`,
+                "Idempotency-Key": `partial-retry-${randomUUID()}`
+            }
+        });
+        assert.equal(response.status, 202);
+        assert.equal(requestedStkPayload.Amount, 100);
+        assert.equal(stkRequestCount, 2);
     } finally {
         axios.defaults.adapter = originalAdapter;
         if (server) {
@@ -377,6 +436,21 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
             );
             await pool.query("DELETE FROM transactions WHERE payment_id = $1", [paymentId]);
             await pool.query("DELETE FROM payments WHERE id = $1", [paymentId]);
+        }
+        if (partialPaymentId) {
+            await pool.query(
+                "DELETE FROM payment_idempotency_operations WHERE payment_id = $1",
+                [partialPaymentId]
+            );
+            await pool.query(
+                `DELETE FROM provider_transactions
+                 WHERE attempt_transaction_id IN (
+                     SELECT id FROM transactions WHERE payment_id = $1
+                 )`,
+                [partialPaymentId]
+            );
+            await pool.query("DELETE FROM transactions WHERE payment_id = $1", [partialPaymentId]);
+            await pool.query("DELETE FROM payments WHERE id = $1", [partialPaymentId]);
         }
         if (paymentLinkId) await pool.query("DELETE FROM payment_links WHERE id = $1", [paymentLinkId]);
         if (merchantId) await pool.query("DELETE FROM customers WHERE merchant_id = $1", [merchantId]);

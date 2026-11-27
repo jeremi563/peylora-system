@@ -186,11 +186,11 @@ The existing application partially represents this model. It is important not to
 
 | Concept or rule | Existing implementation | Current gap |
 |---|---|---|
-| Payment Request | `payments` stores collection intent and compatibility status; successful Provider Transactions feed accounting. | Status is written from attempt outcomes, not cumulative fulfillment. |
+| Payment Request | `payments` stores collection intent and compatibility status; merchant read models derive cumulative fulfillment from unique successful Provider Transactions. | `status` remains attempt-oriented for compatibility; Payment Link binding and atomic admission are still incomplete. |
 | Payment Attempt | `transactions` stores one STK initiation and its checkout identifiers; retries create additional rows. Initiation and retry keys are persisted per merchant operation. | Distinct-key unresolved-attempt serialization and uncertain-dispatch recovery remain incomplete. |
 | Provider Transaction | `provider_transactions` stores at most one outcome per attempt, with a unique attempt constraint. | Callback evidence cannot independently verify fields not returned by Daraja status queries; cryptographic callback authentication and operator conflict resolution are not implemented. |
 | Invoice | Invoice totals and `PARTIALLY_PAID` exist; accounting recalculates allocated and outstanding amounts. | `OVERDUE` versus `PARTIALLY_PAID` precedence remains unresolved. |
-| Partial payments | Successful Provider Transactions allocate up to the linked invoice's outstanding balance. | No separate Payment Request cumulative-fulfillment projection exists. |
+| Partial payments | Successful Provider Transactions allocate up to the linked invoice's outstanding balance; payment list/detail responses expose derived fulfillment and cumulative `amountReceived`. | Fulfillment is computed at read time, not persisted; public Payment Link flows still create separate Payment Requests. |
 | Overpayments/credit | Excess is recorded as Customer Credit or unassigned received funds; ledger operations are transactional and idempotent. | Unassigned-funds identification and some credit-adjustment policies remain unresolved. |
 | Payment Link | Links can be activated, deactivated and expired; each current public pay call creates a new `payments` row. | No explicit use mode or stable request binding is enforced in the public flow; link-level concurrent-use protection is absent. |
 | Incoming provider callback processing | Raw callbacks are persisted in `webhook_events`; exact duplicates are idempotent and changed payloads are separately queued. The PostgreSQL worker persists status-query evidence and comparison results; conflicts do not mutate financial records. | Callback is not cryptographically authenticated. Only result codes `0` and `1032` are currently recognized; other results remain unresolved. Amount, receipt, and other values absent from provider responses remain unverified; operational conflict resolution and alerting remain incomplete. |
@@ -220,7 +220,7 @@ Verified implementation references:
 - What exact expiry and disabled-link rules apply independently of Payment Request fulfillment?
 - Which provider or banking record is authoritative for Settlement?
 
-The approved v0.2 decisions are recorded in ADR-001 and ADR-003–005. Database-backed initiation idempotency and append-only callback verification/conflict handling are implemented; cumulative fulfillment, Payment Link modes, uncertain-dispatch resolution, and audited operator recovery remain incomplete.
+The approved v0.2 decisions are recorded in ADR-001 and ADR-003–005. Database-backed initiation idempotency, append-only callback verification/conflict handling, and derived merchant-facing Payment Request fulfillment are implemented; Payment Link modes, uncertain-dispatch resolution, and audited operator recovery remain incomplete.
 
 ## Flag ADR conflicts
 

@@ -19,6 +19,37 @@ export class IdempotencyConflictError extends Error {
     }
 }
 
+export class PaymentRequestFulfilledError extends Error {
+    constructor() {
+        super("A fulfilled payment request cannot accept another collection");
+        this.name = "PaymentRequestFulfilledError";
+    }
+}
+
+const PAYMENT_FULFILLMENT_JOIN = `
+    LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(pt.received_amount), 0) AS amount_received
+        FROM transactions payment_attempt
+        JOIN provider_transactions pt
+          ON pt.attempt_transaction_id = payment_attempt.id
+         AND pt.merchant_id = payment_attempt.merchant_id
+        WHERE payment_attempt.payment_id = p.id
+          AND payment_attempt.merchant_id = p.merchant_id
+          AND pt.outcome = 'SUCCESS'
+    ) payment_fulfillment ON true
+`;
+
+const PAYMENT_FULFILLMENT_SELECT = `
+    jsonb_build_object(
+        'status', CASE
+            WHEN payment_fulfillment.amount_received >= p.amount THEN 'FULFILLED'
+            WHEN payment_fulfillment.amount_received > 0 THEN 'PARTIALLY_FULFILLED'
+            ELSE 'UNFULFILLED'
+        END,
+        'amountReceived', payment_fulfillment.amount_received
+    ) AS fulfillment
+`;
+
 function hashPaymentRequest({
     amount,
     phoneNumber,
@@ -314,8 +345,10 @@ export async function createPendingTransaction({
 export async function getRetryableMerchantPayment(merchantId, paymentId) {
     const result = await getDatabasePool().query(
         `SELECT p.id, p.amount, p.phone_number, p.description,
-                p.payment_link_id, p.invoice_id, p.status
+                p.payment_link_id, p.invoice_id, p.status,
+                ${PAYMENT_FULFILLMENT_SELECT}
          FROM payments p
+         ${PAYMENT_FULFILLMENT_JOIN}
          WHERE p.id = $1 AND p.merchant_id = $2`,
         [paymentId, merchantId]
     );
@@ -371,6 +404,24 @@ export async function createPaymentAttempt({
                 await client.query("COMMIT");
                 return reusedTransaction(existing);
             }
+        }
+
+        const fulfillment = await client.query(
+            `SELECT COALESCE(SUM(pt.received_amount), 0) >= p.amount AS is_fulfilled
+             FROM payments p
+             LEFT JOIN transactions payment_attempt
+               ON payment_attempt.payment_id = p.id
+              AND payment_attempt.merchant_id = p.merchant_id
+             LEFT JOIN provider_transactions pt
+               ON pt.attempt_transaction_id = payment_attempt.id
+              AND pt.merchant_id = payment_attempt.merchant_id
+              AND pt.outcome = 'SUCCESS'
+             WHERE p.id = $1 AND p.merchant_id = $2
+             GROUP BY p.id`,
+            [paymentId, merchantId]
+        );
+        if (fulfillment.rows[0]?.is_fulfilled) {
+            throw new PaymentRequestFulfilledError();
         }
 
         const attempt = await client.query(
@@ -707,7 +758,7 @@ export async function listMerchantPayments(merchantId, { status, paymentLinkId, 
     const pool = getDatabasePool();
     const result = await pool.query(
         `SELECT p.id, p.payment_link_id, p.reference, p.amount, p.currency, p.phone_number, p.description,
-                p.status, p.created_at, p.updated_at,
+                p.status, ${PAYMENT_FULFILLMENT_SELECT}, p.created_at, p.updated_at,
                 t.id AS transaction_id, t.mpesa_receipt_number, t.checkout_request_id
          FROM payments p
          LEFT JOIN LATERAL (
@@ -715,6 +766,7 @@ export async function listMerchantPayments(merchantId, { status, paymentLinkId, 
              FROM transactions WHERE payment_id = p.id
              ORDER BY created_at DESC LIMIT 1
          ) t ON true
+         ${PAYMENT_FULFILLMENT_JOIN}
          WHERE ${where}
          ORDER BY p.created_at DESC
          LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
@@ -745,7 +797,8 @@ export async function listMerchantPayments(merchantId, { status, paymentLinkId, 
 export async function getMerchantPayment(merchantId, paymentId) {
     const result = await getDatabasePool().query(
         `SELECT p.id, p.reference, p.amount, p.currency, p.phone_number, p.description,
-                p.status, p.completed_at, p.created_at, p.updated_at,
+                p.status, ${PAYMENT_FULFILLMENT_SELECT},
+                p.completed_at, p.created_at, p.updated_at,
                 COALESCE(
                     jsonb_agg(jsonb_build_object(
                         'id', t.id,
@@ -764,8 +817,9 @@ export async function getMerchantPayment(merchantId, paymentId) {
                 ) AS transactions
          FROM payments p
          LEFT JOIN transactions t ON t.payment_id = p.id
+         ${PAYMENT_FULFILLMENT_JOIN}
          WHERE p.id = $1 AND p.merchant_id = $2
-         GROUP BY p.id`,
+         GROUP BY p.id, payment_fulfillment.amount_received`,
         [paymentId, merchantId]
     );
 

@@ -57,7 +57,7 @@ export default function PaymentsPage() {
           if (result.payment.status !== "PENDING") {
             load(pagination.page);
             if (result.payment.status === "SUCCESS") {
-              setToast({ type: "success", message: `Payment ${result.payment.reference} confirmed!` });
+              setToast({ type: "success", message: `Payment attempt for ${result.payment.reference} confirmed!` });
             }
           }
         }
@@ -106,6 +106,7 @@ export default function PaymentsPage() {
         id: result.paymentId,
         reference: result.accountReference,
         amount: Number(form.amount),
+        fulfillment: { status: "UNFULFILLED", amountReceived: 0 },
         phone_number: form.phoneNumber,
         description: form.description,
         status: result.status,
@@ -299,7 +300,7 @@ export default function PaymentsPage() {
             <div className="live-callout callout-success">
               <CheckCircle2 size={16} />
               <div>
-                <strong>Payment confirmed by Safaricom</strong>
+                <strong>Payment attempt confirmed by Safaricom</strong>
                 <p>Funds transferred successfully via M-Pesa.</p>
               </div>
             </div>
@@ -331,6 +332,13 @@ export default function PaymentsPage() {
             <div className="detail-item">
               <small>Status</small>
               <StatusBadge status={selected.status} pulse={selected.status === "PENDING"} />
+            </div>
+            <div className="detail-item">
+              <small>Request fulfillment</small>
+              <strong>{(selected.fulfillment?.status || "UNFULFILLED").replaceAll("_", " ")}</strong>
+              <span>
+                {formatKes(selected.fulfillment?.amountReceived ?? 0)} received of {formatKes(selected.amount)}
+              </span>
             </div>
             <div className="detail-item">
               <small>Customer phone</small>
