@@ -1089,7 +1089,10 @@ Creates a payment record and immediately initiates an M-Pesa STK Push request to
                                     type: "object",
                                     properties: {
                                         success: { type: "boolean", example: true },
-                                        data: { $ref: "#/components/schemas/Payment" }
+                                        message: { type: "string", example: "Daraja status response recorded; transaction status changes only through the callback" },
+                                        transactionId: { type: "string", format: "uuid" },
+                                        response: { type: "object", description: "Raw Daraja status-query response" },
+                                        recorded: { type: "boolean", example: true }
                                     }
                                 }
                             }
@@ -1149,9 +1152,9 @@ Creates a payment record and immediately initiates an M-Pesa STK Push request to
                 description: `
 Manually triggers a reconciliation check for a payment that is in a \`PENDING\` or \`TIMEOUT\` state.
 
-The system queries Safaricom's transaction status API to determine the actual outcome. This is useful when the callback was not received within the expected window.
+The system queries Safaricom's transaction status API and appends the provider response to reconciliation evidence. This endpoint does not change the Payment Attempt or create a Provider Transaction.
 
-> **Note:** A \`TIMEOUT\` status does **not** automatically mean the payment failed. Always reconcile before concluding a timeout means non-payment.
+> **Note:** A \`TIMEOUT\` status does **not** prove payment failure. A query response is evidence for review; it does not by itself change the payment state.
                 `.trim(),
                 operationId: "reconcileTransaction",
                 security: [{ BearerAuth: [] }],
@@ -1166,7 +1169,7 @@ The system queries Safaricom's transaction status API to determine the actual ou
                 ],
                 responses: {
                     200: {
-                        description: "Reconciliation complete — updated payment status returned",
+                        description: "Provider status response recorded as reconciliation evidence",
                         content: {
                             "application/json": {
                                 schema: {
@@ -1174,6 +1177,75 @@ The system queries Safaricom's transaction status API to determine the actual ou
                                     properties: {
                                         success: { type: "boolean", example: true },
                                         data: { $ref: "#/components/schemas/Payment" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    401: { $ref: "#/components/responses/Unauthorized" },
+                    403: { $ref: "#/components/responses/Forbidden" },
+                    404: { $ref: "#/components/responses/NotFound" }
+                }
+            }
+        },
+        "/api/transactions/{transactionId}/reconciliation": {
+            get: {
+                tags: ["Transactions"],
+                summary: "List transaction reconciliation evidence",
+                description: `
+Returns merchant-scoped, append-only status-query and callback-verification evidence. \`MISMATCH\` records identify conflicting provider evidence; \`UNVERIFIED\` records identify fields or outcomes that the available evidence cannot establish. Reading evidence does not change payment or accounting state.
+                `.trim(),
+                operationId: "listTransactionReconciliation",
+                security: [{ BearerAuth: [] }],
+                parameters: [
+                    {
+                        name: "transactionId",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", format: "uuid" },
+                        description: "Transaction UUID"
+                    }
+                ],
+                responses: {
+                    200: {
+                        description: "Merchant-scoped reconciliation evidence",
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        success: { type: "boolean", example: true },
+                                        reconciliation: {
+                                            type: "object",
+                                            properties: {
+                                                transactionId: { type: "string", format: "uuid" },
+                                                settlementStatus: { type: "string", example: "NOT_ASSESSED" },
+                                                lastResponse: { type: "object", nullable: true },
+                                                lastRequestedAt: { type: "string", format: "date-time", nullable: true },
+                                                events: {
+                                                    type: "array",
+                                                    items: {
+                                                        type: "object",
+                                                        properties: {
+                                                            id: { type: "string", format: "uuid" },
+                                                            transaction_id: { type: "string", format: "uuid" },
+                                                            evidence_type: {
+                                                                type: "string",
+                                                                enum: ["STATUS_QUERY", "CALLBACK_VERIFICATION"]
+                                                            },
+                                                            result_code: { type: "integer", nullable: true },
+                                                            callback_result_code: { type: "integer", nullable: true },
+                                                            agreement: {
+                                                                type: "string",
+                                                                enum: ["MATCH", "MISMATCH", "NO_CALLBACK", "UNVERIFIED"]
+                                                            },
+                                                            response_payload: { type: "object" },
+                                                            created_at: { type: "string", format: "date-time" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1198,14 +1270,14 @@ The system queries Safaricom's transaction status API to determine the actual ou
 
 It receives the asynchronous payment result after a customer interacts with the STK Push prompt. The endpoint:
 
-1. Records the raw callback payload as a webhook event.
-2. Identifies the associated payment via \`CheckoutRequestID\`.
-3. Updates the payment status (\`SUCCESS\`, \`FAILED\`, or \`CANCELLED\`).
-4. Creates a financial transaction record.
-5. Enqueues notification jobs (email, in-app).
-6. Records an audit log entry.
+1. Persists the raw callback before acknowledging it; exact duplicates are idempotent and changed payloads remain separate evidence.
+2. Defers verification to a PostgreSQL-backed worker, which queries Daraja and compares the callback with the associated attempt.
+3. Persists the callback, status-query response, and comparison result as reconciliation evidence.
+4. Applies financial effects only for supported terminal results with matching evidence. Conflicts are retained without changing payment or accounting records; fields absent from provider evidence remain explicitly unverified.
 
 The endpoint **must respond quickly** — slow operations are deferred to background workers.
+
+Result-code matching is not cryptographic callback authentication.
 
 Configure this URL in your Safaricom Daraja application as the \`CallbackURL\`.
                 `.trim(),

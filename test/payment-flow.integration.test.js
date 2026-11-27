@@ -32,7 +32,9 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
     let transactionId;
     let paymentLinkId;
     let checkoutRequestId;
+    let merchantRequestId;
     let eventKey;
+    let conflictingEventKey;
     const originalAdapter = axios.defaults.adapter;
     let stkRequestCount = 0;
     let requestedStkPayload;
@@ -56,7 +58,7 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
                 data: {
                     ResponseCode: "0",
                     ResponseDescription: "Accepted",
-                    MerchantRequestID: `merchant-${randomUUID()}`,
+                    MerchantRequestID: merchantRequestId = `merchant-${randomUUID()}`,
                     CheckoutRequestID: checkoutRequestId
                 },
                 status: 200,
@@ -71,7 +73,7 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
                 data: {
                     ResponseCode: "0",
                     ResponseDescription: "The service request has been processed successfully",
-                    MerchantRequestID: "integration-test-merchant",
+                    MerchantRequestID: merchantRequestId,
                     CheckoutRequestID: checkoutRequestId,
                     ResultCode: 0,
                     ResultDesc: "The service request is processed successfully."
@@ -183,9 +185,29 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         assert.ok(claimed);
         const processed = await transaction.applyMpesaCallback(
             claimed.payload.callback,
-            claimed.payload.metadata
+            claimed.payload.metadata,
+            {
+                eventId: claimed.id,
+                eventKey: claimed.event_key,
+                rawPayload: claimed.payload.rawPayload
+            }
         );
         assert.equal(processed.status, "SUCCESS");
+
+        const verificationEvents = await pool.query(
+            `SELECT evidence_type, result_code, callback_result_code, agreement, response_payload
+             FROM reconciliation_events WHERE transaction_id = $1`,
+            [transactionId]
+        );
+        assert.equal(verificationEvents.rowCount, 1);
+        assert.equal(verificationEvents.rows[0].evidence_type, "CALLBACK_VERIFICATION");
+        assert.equal(verificationEvents.rows[0].agreement, "MATCH");
+        assert.equal(verificationEvents.rows[0].result_code, 0);
+        assert.equal(verificationEvents.rows[0].callback_result_code, 0);
+        assert.deepEqual(verificationEvents.rows[0].response_payload.statusResponse.CheckoutRequestID, checkoutRequestId);
+        assert.deepEqual(verificationEvents.rows[0].response_payload.rawPayload, callbackBody);
+        assert.ok(verificationEvents.rows[0].response_payload.verification.unverifiedFields.includes("amount"));
+        assert.ok(verificationEvents.rows[0].response_payload.verification.unverifiedFields.includes("receipt"));
 
         const providerTransaction = await pool.query(
             `SELECT id, outcome, received_amount, evidence_type, evidence_event_key
@@ -244,11 +266,53 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
 
         const duplicate = await webhook.enqueueMpesaCallback(
             callbackBody.Body.stkCallback,
-            { Amount: 245, MpesaReceiptNumber: "E2ERECEIPT" },
+            { Amount: 245, MpesaReceiptNumber: "E2ERECEIPT", PhoneNumber: 254700001234 },
             callbackBody
         );
         assert.equal(duplicate.duplicate, true);
         assert.equal(duplicate.eventId, queued.rows[0].id);
+
+        const conflictingBody = structuredClone(callbackBody);
+        conflictingBody.Body.stkCallback.CallbackMetadata.Item[0].Value = 246;
+        conflictingBody.Body.stkCallback.CallbackMetadata.Item[1].Value = "CONFLICTING-RECEIPT";
+        const conflicting = await webhook.enqueueMpesaCallback(
+            conflictingBody.Body.stkCallback,
+            { Amount: 246, MpesaReceiptNumber: "CONFLICTING-RECEIPT", PhoneNumber: 254700001234 },
+            conflictingBody
+        );
+        assert.equal(conflicting.duplicate, false);
+        conflictingEventKey = conflicting.eventKey;
+        const conflictEvent = (await webhook.claimWebhookEvents(10, 300))
+            .find((event) => event.id === conflicting.eventId);
+        assert.ok(conflictEvent);
+        const conflictResult = await transaction.applyMpesaCallback(
+            conflictEvent.payload.callback,
+            conflictEvent.payload.metadata,
+            {
+                eventId: conflictEvent.id,
+                eventKey: conflictEvent.event_key,
+                rawPayload: conflictEvent.payload.rawPayload
+            }
+        );
+        assert.equal(conflictResult.conflict, true);
+        assert.deepEqual(conflictResult.conflictFields.sort(), ["amount", "receipt"]);
+
+        const conflictEvidence = await pool.query(
+            `SELECT agreement, response_payload
+             FROM reconciliation_events
+             WHERE transaction_id = $1 AND agreement = 'MISMATCH'`,
+            [transactionId]
+        );
+        assert.equal(conflictEvidence.rowCount, 1);
+        assert.deepEqual(conflictEvidence.rows[0].response_payload.rawPayload, conflictingBody);
+        const unchangedProviderTransaction = await pool.query(
+            `SELECT outcome, received_amount, provider_reference
+             FROM provider_transactions WHERE attempt_transaction_id = $1`,
+            [transactionId]
+        );
+        assert.equal(unchangedProviderTransaction.rows[0].outcome, "SUCCESS");
+        assert.equal(Number(unchangedProviderTransaction.rows[0].received_amount), 245);
+        assert.equal(unchangedProviderTransaction.rows[0].provider_reference, "E2ERECEIPT");
 
         response = await fetch(`${baseUrl}/api/payments/${paymentId}/retry`, {
             method: "POST",
@@ -272,10 +336,14 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         if (eventKey) {
             await pool.query("DELETE FROM notifications WHERE event_key = $1", [eventKey]);
             await pool.query("DELETE FROM audit_logs WHERE event_key = $1", [eventKey]);
-            await pool.query("DELETE FROM webhook_events WHERE event_key = $1", [eventKey]);
+            await pool.query(
+                "DELETE FROM webhook_events WHERE event_key = $1 OR event_key = $2",
+                [eventKey, conflictingEventKey]
+            );
         }
         if (paymentId) {
             await pool.query("DELETE FROM audit_logs WHERE event_key = $1", [`payment-created:${paymentId}`]);
+            await pool.query("DELETE FROM reconciliation_events WHERE transaction_id IN (SELECT id FROM transactions WHERE payment_id = $1)", [paymentId]);
             await pool.query(
                 "DELETE FROM payment_idempotency_operations WHERE payment_id = $1",
                 [paymentId]

@@ -17,19 +17,42 @@ async function processEvent(event) {
         throw new Error(`Unsupported webhook event ${event.provider}:${event.event_type}`);
     }
 
-    const result = await applyMpesaCallback(event.payload.callback, event.payload.metadata);
+    const result = await applyMpesaCallback(
+        event.payload.callback,
+        event.payload.metadata,
+        {
+            eventId: event.id,
+            eventKey: event.event_key,
+            rawPayload: event.payload.rawPayload
+        }
+    );
     if (result.storedForRetry) {
         await retryWebhookEvent(
             event.id,
             event.attempts,
             event.max_attempts,
-            "Waiting for the matching STK transaction to be associated"
+            result.reason ?? "Provider callback verification remains unresolved"
         );
         return;
     }
 
     if (!result.matched) {
         throw new Error(result.reason || "Webhook callback could not be matched");
+    }
+
+    if (result.conflict) {
+        console.warn("Conflicting provider evidence retained:", {
+            eventId: event.id,
+            conflictFields: result.conflictFields
+        });
+        return;
+    }
+    if (result.unverified) {
+        console.warn("Provider callback retained without financial effects:", {
+            eventId: event.id,
+            reason: result.reason
+        });
+        return;
     }
 
     console.info("Webhook event processed:", {

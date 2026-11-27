@@ -6,6 +6,7 @@ import axios from "axios";
 import {
     buildStkPayload,
     callbackMatchesDarajaStatus,
+    compareCallbackWithDarajaStatus,
     extractCallbackMetadata,
     generateStkPassword,
     generateTimestamp,
@@ -94,8 +95,10 @@ test("metadata extraction and payment outcome use callback amount", () => {
         amountMatches: false
     });
     assert.equal(determineCallbackOutcome(1032, {}, 25).status, "CANCELLED");
-    assert.equal(determineCallbackOutcome(1, {}, 25).status, "FAILED");
-    assert.equal(determineCallbackOutcome(0, {}, 25).status, "FAILED");
+    assert.equal(determineCallbackOutcome(1, {}, 25).status, "UNVERIFIED");
+    assert.equal(determineCallbackOutcome(1, {}, 25).unverifiedReason, "UNRECOGNIZED_DARAJA_RESULT_CODE");
+    assert.equal(determineCallbackOutcome(0, {}, 25).status, "UNVERIFIED");
+    assert.equal(determineCallbackOutcome(0, {}, 25).unverifiedReason, "SUCCESS_CALLBACK_MISSING_VALID_AMOUNT");
 });
 
 test("callback outcomes must match Daraja status-query results", () => {
@@ -115,4 +118,67 @@ test("callback outcomes must match Daraja status-query results", () => {
         { ResultCode: 0 },
         { ResponseCode: "0" }
     ), false);
+});
+
+test("callback verification compares provider identifiers and authoritative metadata", () => {
+    const callback = {
+        CheckoutRequestID: "checkout-1",
+        MerchantRequestID: "merchant-1",
+        ResultCode: 0
+    };
+    const metadata = { Amount: 25, MpesaReceiptNumber: "ABC123" };
+    const transaction = {
+        checkout_request_id: "checkout-1",
+        merchant_request_id: "merchant-1"
+    };
+    const statusResponse = {
+        ResponseCode: "0",
+        CheckoutRequestID: "checkout-1",
+        MerchantRequestID: "merchant-1",
+        ResultCode: 0,
+        CallbackMetadata: {
+            Item: [
+                { Name: "Amount", Value: 25 },
+                { Name: "MpesaReceiptNumber", Value: "ABC123" }
+            ]
+        }
+    };
+
+    assert.deepEqual(
+        compareCallbackWithDarajaStatus(callback, metadata, transaction, statusResponse),
+        {
+            agreement: "MATCH",
+            callbackResultCode: 0,
+            statusResultCode: 0,
+            conflictFields: [],
+            unverifiedFields: ["phoneNumber", "transactionDate"]
+        }
+    );
+    const mismatch = compareCallbackWithDarajaStatus(
+        callback,
+        { ...metadata, Amount: 26 },
+        transaction,
+        statusResponse
+    );
+    assert.equal(mismatch.agreement, "MISMATCH");
+    assert.deepEqual(mismatch.conflictFields, ["amount"]);
+    const associationMismatch = compareCallbackWithDarajaStatus(
+        callback,
+        metadata,
+        transaction,
+        { ...statusResponse, CheckoutRequestID: "different-checkout" }
+    );
+    assert.equal(associationMismatch.agreement, "MISMATCH");
+    assert.deepEqual(associationMismatch.conflictFields, ["checkoutRequestId"]);
+});
+
+test("unrecognized Daraja result codes remain unverified", () => {
+    const result = compareCallbackWithDarajaStatus(
+        { CheckoutRequestID: "checkout-1", ResultCode: 1 },
+        {},
+        { checkout_request_id: "checkout-1" },
+        { ResponseCode: "0", CheckoutRequestID: "checkout-1", ResultCode: 1 }
+    );
+    assert.equal(result.agreement, "UNVERIFIED");
+    assert.ok(result.unverifiedFields.includes("terminalResultCode"));
 });

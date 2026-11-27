@@ -1,9 +1,22 @@
+import { createHash } from "node:crypto";
 import { getDatabasePool } from "../database.js";
 
 function parseResultCode(value) {
     if (Number.isInteger(value)) return value;
     if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number(value);
     return null;
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalJson).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) =>
+            `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+        ).join(",")}}`;
+    }
+    return JSON.stringify(value);
 }
 
 export async function enqueueMpesaCallback(callback, metadata, rawPayload = { Body: { stkCallback: callback } }) {
@@ -13,30 +26,73 @@ export async function enqueueMpesaCallback(callback, metadata, rawPayload = { Bo
         return { accepted: false, reason: "INVALID_CALLBACK" };
     }
 
-    const eventKey = `mpesa:${checkoutRequestId}`;
-    const result = await getDatabasePool().query(
-        `INSERT INTO webhook_events (provider, event_type, event_key, payload, status, next_attempt_at)
-         VALUES ('MPESA', 'STK_CALLBACK', $1, $2, 'RECEIVED', NOW())
-         ON CONFLICT (event_key) DO NOTHING
-         RETURNING id`,
-        [eventKey, JSON.stringify({ callback, metadata, rawPayload })]
-    );
+    const baseEventKey = `mpesa:${checkoutRequestId}`;
+    const payload = { callback, metadata, rawPayload };
+    const canonicalPayload = canonicalJson(payload);
+    const fingerprint = createHash("sha256").update(canonicalPayload).digest("hex");
+    const client = await getDatabasePool().connect();
 
-    if (result.rowCount) {
-        return { accepted: true, duplicate: false, eventId: result.rows[0].id, eventKey };
+    try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [checkoutRequestId]);
+
+        const baseEvent = await client.query(
+            "SELECT id, event_key, payload, status FROM webhook_events WHERE event_key = $1 FOR UPDATE",
+            [baseEventKey]
+        );
+        if (baseEvent.rowCount && canonicalJson(baseEvent.rows[0].payload) === canonicalPayload) {
+            await client.query("COMMIT");
+            return {
+                accepted: true,
+                duplicate: true,
+                eventId: baseEvent.rows[0].id,
+                eventKey: baseEventKey,
+                status: baseEvent.rows[0].status
+            };
+        }
+
+        const eventKey = baseEvent.rowCount
+            ? `${baseEventKey}:${fingerprint}`
+            : baseEventKey;
+        const existing = eventKey === baseEventKey
+            ? null
+            : await client.query(
+                "SELECT id, payload, status FROM webhook_events WHERE event_key = $1 FOR UPDATE",
+                [eventKey]
+            );
+        if (existing?.rowCount) {
+            if (canonicalJson(existing.rows[0].payload) !== canonicalPayload) {
+                throw new Error("Callback evidence fingerprint collision");
+            }
+            await client.query("COMMIT");
+            return {
+                accepted: true,
+                duplicate: true,
+                eventId: existing.rows[0].id,
+                eventKey,
+                status: existing.rows[0].status
+            };
+        }
+
+        const inserted = await client.query(
+            `INSERT INTO webhook_events (provider, event_type, event_key, payload, status, next_attempt_at)
+             VALUES ('MPESA', 'STK_CALLBACK', $1, $2, 'RECEIVED', NOW())
+             RETURNING id`,
+            [eventKey, JSON.stringify(payload)]
+        );
+        await client.query("COMMIT");
+        return {
+            accepted: true,
+            duplicate: false,
+            eventId: inserted.rows[0].id,
+            eventKey
+        };
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
     }
-
-    const existing = await getDatabasePool().query(
-        "SELECT id, status FROM webhook_events WHERE event_key = $1",
-        [eventKey]
-    );
-    return {
-        accepted: true,
-        duplicate: true,
-        eventId: existing.rows[0]?.id,
-        eventKey,
-        status: existing.rows[0]?.status
-    };
 }
 
 export async function claimWebhookEvents(limit = 10, leaseSeconds = 300) {

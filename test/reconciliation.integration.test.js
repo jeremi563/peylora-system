@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import axios from "axios";
 
 import "dotenv/config";
 
 process.env.NODE_ENV = "test";
 process.env.AUTH_JWT_SECRET = "phase-reconciliation-test-secret-at-least-32";
+process.env.MPESA_CONSUMER_KEY = "reconciliation-test-key";
+process.env.MPESA_CONSUMER_SECRET = "reconciliation-test-secret";
+process.env.MPESA_SHORTCODE = "174379";
+process.env.MPESA_PASSKEY = "reconciliation-test-passkey";
 
 test("reconciliation evidence is append-only and merchant-scoped", async () => {
     const { connectDatabase, closeDatabase, getDatabasePool } = await import("../src/database.js");
@@ -16,6 +21,8 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
     let merchantId;
     let paymentId;
     let attemptId;
+    let incompleteAttemptId;
+    const originalAdapter = axios.defaults.adapter;
 
     try {
         const user = await pool.query(
@@ -43,7 +50,7 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
              )
              VALUES ($1, $2, $3, 100, 'KES', $4, 'MPESA', 'PENDING', $5)
              RETURNING id`,
-            [paymentId, merchantId, `ACC-RECON-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`, `CHECKOUT-${suffix}`]
+            [paymentId, merchantId, `ACC-RECON-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`, null]
         )).rows[0].id;
         await pool.query(
             "UPDATE transactions SET result_code = 0 WHERE id = $1",
@@ -72,6 +79,182 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
             ["MATCH", "MISMATCH"].sort()
         );
 
+        const callback = {
+            CheckoutRequestID: `CHECKOUT-${suffix}`,
+            MerchantRequestID: `MERCHANT-${suffix}`,
+            ResultCode: 0,
+            ResultDesc: "The service request is processed successfully."
+        };
+        const rawPayload = { Body: { stkCallback: callback } };
+        const webhook = await import("../src/services/webhook.service.js");
+        const queuedCallback = await webhook.enqueueMpesaCallback(
+            callback,
+            { Amount: 100, MpesaReceiptNumber: `RECEIPT-${suffix}` },
+            rawPayload
+        );
+        assert.equal(queuedCallback.duplicate, false);
+
+        const concurrentCheckoutId = `CHECKOUT-CONCURRENT-${suffix}`;
+        const concurrentCallback = {
+            CheckoutRequestID: concurrentCheckoutId,
+            ResultCode: 0
+        };
+        const concurrentPayload = { Body: { stkCallback: concurrentCallback } };
+        const concurrentEnqueues = await Promise.all([
+            webhook.enqueueMpesaCallback(concurrentCallback, { Amount: 10 }, concurrentPayload),
+            webhook.enqueueMpesaCallback(concurrentCallback, { Amount: 20 }, {
+                Body: { stkCallback: { ...concurrentCallback, ResultDesc: "Changed evidence" } }
+            }),
+            webhook.enqueueMpesaCallback(concurrentCallback, { Amount: 10 }, concurrentPayload)
+        ]);
+        assert.equal(concurrentEnqueues.filter((item) => !item.duplicate).length, 2);
+        assert.equal(new Set(concurrentEnqueues.map((item) => item.eventId)).size, 2);
+        assert.equal((await pool.query(
+            `SELECT COUNT(*)::integer AS count FROM webhook_events
+             WHERE payload->'callback'->>'CheckoutRequestID' = $1`,
+            [concurrentCheckoutId]
+        )).rows[0].count, 2);
+
+        await transactionService.saveStkResponse(attemptId, {
+            ResponseCode: "0",
+            MerchantRequestID: callback.MerchantRequestID,
+            CheckoutRequestID: callback.CheckoutRequestID
+        });
+        const beforeVerification = await pool.query(
+            `SELECT t.status, COUNT(pt.id)::integer AS provider_transaction_count
+             FROM transactions t
+             LEFT JOIN provider_transactions pt ON pt.attempt_transaction_id = t.id
+             WHERE t.id = $1 GROUP BY t.id`,
+            [attemptId]
+        );
+        assert.equal(beforeVerification.rows[0].status, "PENDING");
+        assert.equal(beforeVerification.rows[0].provider_transaction_count, 0);
+
+        let statusResultCode = 1032;
+        axios.defaults.adapter = async (config) => {
+            if (config.url.includes("oauth")) {
+                return {
+                    data: { access_token: "reconciliation-integration-token" },
+                    status: 200,
+                    statusText: "OK",
+                    headers: {},
+                    config
+                };
+            }
+            if (config.url.includes("stkpushquery")) {
+                const request = JSON.parse(config.data);
+                return {
+                    data: {
+                        ResponseCode: "0",
+                        CheckoutRequestID: request.CheckoutRequestID,
+                        MerchantRequestID: request.CheckoutRequestID.replace("CHECKOUT", "MERCHANT"),
+                        ResultCode: statusResultCode,
+                        ResultDesc: statusResultCode === 1032
+                            ? "Request cancelled by user"
+                            : "The service request is processed successfully."
+                    },
+                    status: 200,
+                    statusText: "OK",
+                    headers: {},
+                    config
+                };
+            }
+            throw new Error(`Unexpected Daraja request: ${config.url}`);
+        };
+        const conflict = await transactionService.applyMpesaCallback(
+            callback,
+            { Amount: 100, MpesaReceiptNumber: `RECEIPT-${suffix}` },
+            { eventId: queuedCallback.eventId, rawPayload }
+        );
+        assert.equal(conflict.conflict, true);
+        assert.ok(conflict.conflictFields.includes("resultCode"));
+        const unresolved = await pool.query(
+            `SELECT t.status, COUNT(pt.id)::integer AS provider_transaction_count
+             FROM transactions t
+             LEFT JOIN provider_transactions pt ON pt.attempt_transaction_id = t.id
+             WHERE t.id = $1 GROUP BY t.id`,
+            [attemptId]
+        );
+        assert.equal(unresolved.rows[0].status, "PENDING");
+        assert.equal(unresolved.rows[0].provider_transaction_count, 0);
+        const callbackEvidence = await transactionService.listReconciliationEvents(merchantId, attemptId);
+        const verification = callbackEvidence.find((event) => event.evidence_type === "CALLBACK_VERIFICATION");
+        assert.equal(verification.agreement, "MISMATCH");
+        assert.equal(verification.result_code, 1032);
+        assert.equal(verification.callback_result_code, 0);
+        assert.deepEqual(verification.response_payload.rawPayload, rawPayload);
+        assert.equal(verification.response_payload.statusResponse.ResultCode, 1032);
+        assert.equal(await transactionService.recordReconciliationResponse(
+            attemptId,
+            merchantId,
+            {
+                ResponseCode: "0",
+                CheckoutRequestID: "OTHER-CHECKOUT",
+                MerchantRequestID: callback.MerchantRequestID,
+                ResultCode: 0,
+                CallbackMetadata: {
+                    Item: [
+                        { Name: "Amount", Value: 101 },
+                        { Name: "MpesaReceiptNumber", Value: "OTHER-RECEIPT" }
+                    ]
+                }
+            }
+        ), true);
+        const manualConflict = (await transactionService.listReconciliationEvents(merchantId, attemptId))
+            .find((event) => event.evidence_type === "STATUS_QUERY"
+                && event.response_payload.CheckoutRequestID === "OTHER-CHECKOUT");
+        assert.equal(manualConflict.agreement, "MISMATCH");
+        assert.ok(manualConflict.response_payload.verification.conflictFields.includes("checkoutRequestId"));
+        assert.ok(manualConflict.response_payload.verification.conflictFields.includes("amount"));
+        assert.ok(manualConflict.response_payload.verification.conflictFields.includes("receipt"));
+
+        incompleteAttemptId = (await pool.query(
+            `INSERT INTO transactions (
+                payment_id, merchant_id, account_reference, amount,
+                currency, phone_number, provider, status
+             )
+             VALUES ($1, $2, $3, 100, 'KES', $4, 'MPESA', 'PENDING')
+             RETURNING id`,
+            [paymentId, merchantId, `ACC-MISSING-AMOUNT-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`]
+        )).rows[0].id;
+        const incompleteCallback = {
+            CheckoutRequestID: `CHECKOUT-MISSING-${suffix}`,
+            MerchantRequestID: `MERCHANT-MISSING-${suffix}`,
+            ResultCode: 0,
+            ResultDesc: "The service request is processed successfully."
+        };
+        const incompleteRawPayload = { Body: { stkCallback: incompleteCallback } };
+        const incompleteEvent = await webhook.enqueueMpesaCallback(
+            incompleteCallback,
+            {},
+            incompleteRawPayload
+        );
+        await transactionService.saveStkResponse(incompleteAttemptId, {
+            ResponseCode: "0",
+            MerchantRequestID: incompleteCallback.MerchantRequestID,
+            CheckoutRequestID: incompleteCallback.CheckoutRequestID
+        });
+        statusResultCode = 0;
+        const unverifiedSuccess = await transactionService.applyMpesaCallback(
+            incompleteCallback,
+            {},
+            { eventId: incompleteEvent.eventId, rawPayload: incompleteRawPayload }
+        );
+        assert.equal(unverifiedSuccess.unverified, true);
+        assert.equal(unverifiedSuccess.status, "PENDING");
+        const incompleteState = await pool.query(
+            `SELECT t.status, COUNT(pt.id)::integer AS provider_transaction_count
+             FROM transactions t
+             LEFT JOIN provider_transactions pt ON pt.attempt_transaction_id = t.id
+             WHERE t.id = $1 GROUP BY t.id`,
+            [incompleteAttemptId]
+        );
+        assert.equal(incompleteState.rows[0].status, "PENDING");
+        assert.equal(incompleteState.rows[0].provider_transaction_count, 0);
+        const incompleteEvidence = await transactionService.listReconciliationEvents(merchantId, incompleteAttemptId);
+        assert.equal(incompleteEvidence[0].agreement, "UNVERIFIED");
+        assert.ok(incompleteEvidence[0].response_payload.verification.unverifiedFields.includes("amount"));
+
         const secondMerchant = await pool.query(
             `INSERT INTO users (name, email, password_hash)
              VALUES ('Other Merchant', $1, 'test-password-hash')
@@ -96,6 +279,15 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
             /reconciliation_events_transaction_fk/
         );
     } finally {
+        axios.defaults.adapter = originalAdapter;
+        await pool.query(
+            "DELETE FROM webhook_events WHERE event_key LIKE $1 OR event_key LIKE $2 OR event_key LIKE $3",
+            [
+                `mpesa:CHECKOUT-${suffix}%`,
+                `mpesa:CHECKOUT-MISSING-${suffix}%`,
+                `mpesa:CHECKOUT-CONCURRENT-${suffix}%`
+            ]
+        ).catch(() => {});
         await pool.query("DELETE FROM reconciliation_events WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM payments WHERE merchant_id = $1", [merchantId]).catch(() => {});

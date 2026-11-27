@@ -313,6 +313,14 @@ POST /api/transactions/:transactionId/reconcile
 
 Queries the Daraja STK status endpoint for a pending transaction and records the provider response. The final payment state is changed by the callback processing flow.
 
+### List transaction reconciliation evidence
+
+```http
+GET /api/transactions/:transactionId/reconciliation
+```
+
+Returns merchant-scoped, append-only status-query and callback-verification evidence, including `MATCH`, `MISMATCH`, and `UNVERIFIED` comparisons. Conflicting evidence is visible here and does not silently alter transaction or accounting records.
+
 ### Receive Daraja callback
 
 ```http
@@ -320,6 +328,10 @@ POST /api/mpesa/callback
 ```
 
 Public provider callback endpoint. Safaricom Daraja posts the STK callback payload here. The API persists accepted callbacks before acknowledging them; the webhook worker processes them asynchronously and idempotently.
+
+The worker stores each status-query response with the callback evidence. It compares terminal result codes and transaction identifiers, and compares amount, receipt, and other metadata only when Daraja returns those fields as provider evidence. Conflicts are retained as reconciliation evidence and do not update payment or accounting records. Callback fields absent from the status response remain provider-reported and unverified; matching result codes are not cryptographic callback authentication.
+
+The callback flow currently recognizes result codes `0` (success) and `1032` (customer cancellation). Other result codes, non-successful query responses, and success callbacks without a valid positive amount remain unresolved rather than being recorded as payment failures.
 
 Successful acknowledgement:
 
