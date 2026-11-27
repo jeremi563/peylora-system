@@ -33,12 +33,13 @@ test("pending attempts become TIMEOUT once and late callbacks remain eligible", 
             };
         }
         if (config.url.includes("stkpushquery")) {
+            const request = JSON.parse(config.data);
             return {
                 data: {
                     ResponseCode: "0",
                     ResponseDescription: "The service request has been processed successfully",
                     MerchantRequestID: "timeout-test-merchant",
-                    CheckoutRequestID: null,
+                    CheckoutRequestID: request.CheckoutRequestID,
                     ResultCode: 1032,
                     ResultDesc: "Request cancelled by user"
                 },
@@ -128,6 +129,14 @@ test("pending attempts become TIMEOUT once and late callbacks remain eligible", 
         assert.equal(finalState.rows[0].status, "CANCELLED");
     } finally {
         axios.defaults.adapter = originalAdapter;
+        await pool.query(
+            "DELETE FROM reconciliation_events WHERE transaction_id = $1",
+            [attemptId]
+        ).catch(() => {});
+        await pool.query(
+            "DELETE FROM webhook_events WHERE event_key LIKE $1",
+            [`mpesa:late-checkout-${suffix}%`]
+        ).catch(() => {});
         await pool.query("DELETE FROM provider_transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM payments WHERE merchant_id = $1", [merchantId]).catch(() => {});

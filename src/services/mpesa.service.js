@@ -143,22 +143,100 @@ export function extractCallbackMetadata(callbackMetadata) {
 }
 
 export function extractDarajaStatusResultCode(statusResponse) {
-    if (statusResponse?.ResultCode !== undefined) {
-        return Number(statusResponse.ResultCode);
-    }
-    if (statusResponse?.resultCode !== undefined) {
-        return Number(statusResponse.resultCode);
-    }
+    const value = statusResponse?.ResultCode ?? statusResponse?.resultCode;
+    if (Number.isInteger(value)) return value;
+    if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number(value);
     return null;
 }
 
 export function callbackMatchesDarajaStatus(callback, statusResponse) {
     if (!callback || typeof callback !== "object") return false;
-    const callbackCode = Number(callback.ResultCode);
+    const callbackCode = extractDarajaStatusResultCode(callback);
     const statusCode = extractDarajaStatusResultCode(statusResponse);
-    return Number.isInteger(callbackCode)
-        && statusCode !== null
-        && callbackCode === statusCode;
+    return callbackCode !== null && statusCode !== null && callbackCode === statusCode;
+}
+
+function comparableValue(field, value) {
+    if (field === "Amount") {
+        const amount = Number(value);
+        return Number.isFinite(amount) ? amount : value;
+    }
+    return value == null ? value : String(value);
+}
+
+export function compareCallbackWithDarajaStatus(callback, metadata, transaction, statusResponse) {
+    const conflictFields = [];
+    const unverifiedFields = [];
+    const callbackCode = extractDarajaStatusResultCode(callback);
+    const statusCode = extractDarajaStatusResultCode(statusResponse);
+    const hasResponseCode = statusResponse?.ResponseCode != null;
+    const responseCode = statusResponse?.ResponseCode == null
+        ? null
+        : extractDarajaStatusResultCode({ ResultCode: statusResponse.ResponseCode });
+
+    if (
+        statusCode === null
+        || ![0, 1032].includes(callbackCode)
+        || ![0, 1032].includes(statusCode)
+        || (hasResponseCode && responseCode !== 0)
+    ) {
+        return {
+            agreement: "UNVERIFIED",
+            callbackResultCode: callbackCode,
+            statusResultCode: statusCode,
+            conflictFields,
+            unverifiedFields: ["terminalResultCode", "checkoutRequestId", "amount", "receipt"]
+        };
+    }
+    if (callbackCode !== statusCode) conflictFields.push("resultCode");
+
+    const compareIdentifier = (field, callbackValue, transactionValue, statusValue) => {
+        if (callbackValue != null && transactionValue != null && callbackValue !== transactionValue) {
+            conflictFields.push(field);
+        }
+        if (statusValue != null && transactionValue != null && statusValue !== transactionValue) {
+            conflictFields.push(field);
+        }
+    };
+
+    compareIdentifier(
+        "checkoutRequestId",
+        callback.CheckoutRequestID,
+        transaction.checkout_request_id,
+        statusResponse?.CheckoutRequestID
+    );
+    compareIdentifier(
+        "merchantRequestId",
+        callback.MerchantRequestID,
+        transaction.merchant_request_id,
+        statusResponse?.MerchantRequestID
+    );
+    if (statusResponse?.CheckoutRequestID == null) unverifiedFields.push("checkoutRequestId");
+    if (statusResponse?.MerchantRequestID == null) unverifiedFields.push("merchantRequestId");
+
+    const statusMetadata = extractCallbackMetadata(statusResponse?.CallbackMetadata);
+    for (const [field, conflictName] of [
+        ["Amount", "amount"],
+        ["MpesaReceiptNumber", "receipt"],
+        ["PhoneNumber", "phoneNumber"],
+        ["TransactionDate", "transactionDate"]
+    ]) {
+        if (Object.hasOwn(statusMetadata, field) && Object.hasOwn(metadata, field)) {
+            if (comparableValue(field, statusMetadata[field]) !== comparableValue(field, metadata[field])) {
+                conflictFields.push(conflictName);
+            }
+        } else {
+            unverifiedFields.push(conflictName);
+        }
+    }
+
+    return {
+        agreement: conflictFields.length ? "MISMATCH" : "MATCH",
+        callbackResultCode: callbackCode,
+        statusResultCode: statusCode,
+        conflictFields: [...new Set(conflictFields)],
+        unverifiedFields
+    };
 }
 
 

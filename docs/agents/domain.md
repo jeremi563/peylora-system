@@ -170,7 +170,7 @@ Every financial operation must preserve:
 
 Duplicate provider callbacks must not create duplicate financial records, allocations or credits. Financial processing must be idempotent and transactionally consistent.
 
-Conflicting callback and provider-verification evidence must be retained as a reconciliation exception. It must not silently overwrite a Provider Transaction or its financial effects. Callback result-code comparison remains distinct from cryptographic callback authentication and does not independently verify callback amount or receipt data.
+Conflicting callback and provider-verification evidence must be retained as a reconciliation exception. It must not silently overwrite a Provider Transaction or its financial effects. Callback result-code and transaction-identifier comparisons remain distinct from cryptographic callback authentication. Amount, receipt, and other fields absent from authoritative provider evidence remain provider-reported and unverified.
 
 Provider success does not prove:
 
@@ -187,16 +187,16 @@ The existing application partially represents this model. It is important not to
 | Concept or rule | Existing implementation | Current gap |
 |---|---|---|
 | Payment Request | `payments` stores collection intent and compatibility status; successful Provider Transactions feed accounting. | Status is written from attempt outcomes, not cumulative fulfillment. |
-| Payment Attempt | `transactions` stores one STK initiation and its checkout identifiers; retries create additional rows. | Retry idempotency is not persisted; the retry guard is outside the locking transaction and can race. |
-| Provider Transaction | `provider_transactions` stores at most one outcome per attempt, with a unique attempt constraint. | Callback verification cross-checks `ResultCode` only; amount and receipt evidence are not independently compared. |
+| Payment Attempt | `transactions` stores one STK initiation and its checkout identifiers; retries create additional rows. Initiation and retry keys are persisted per merchant operation. | Distinct-key unresolved-attempt serialization and uncertain-dispatch recovery remain incomplete. |
+| Provider Transaction | `provider_transactions` stores at most one outcome per attempt, with a unique attempt constraint. | Callback evidence cannot independently verify fields not returned by Daraja status queries; cryptographic callback authentication and operator conflict resolution are not implemented. |
 | Invoice | Invoice totals and `PARTIALLY_PAID` exist; accounting recalculates allocated and outstanding amounts. | `OVERDUE` versus `PARTIALLY_PAID` precedence remains unresolved. |
 | Partial payments | Successful Provider Transactions allocate up to the linked invoice's outstanding balance. | No separate Payment Request cumulative-fulfillment projection exists. |
 | Overpayments/credit | Excess is recorded as Customer Credit or unassigned received funds; ledger operations are transactional and idempotent. | Unassigned-funds identification and some credit-adjustment policies remain unresolved. |
 | Payment Link | Links can be activated, deactivated and expired; each current public pay call creates a new `payments` row. | No explicit use mode or stable request binding is enforced in the public flow; link-level concurrent-use protection is absent. |
-| Incoming provider callback processing | Callbacks are persisted in `webhook_events`, deduplicated by checkout ID and processed by a PostgreSQL-backed worker. Callback processing queries Daraja and compares result codes. | Callback is not cryptographically authenticated; callback amount/receipt are not independently verified; query evidence used during callback processing is not retained alongside the callback. |
+| Incoming provider callback processing | Raw callbacks are persisted in `webhook_events`; exact duplicates are idempotent and changed payloads are separately queued. The PostgreSQL worker persists status-query evidence and comparison results; conflicts do not mutate financial records. | Callback is not cryptographically authenticated. Only result codes `0` and `1032` are currently recognized; other results remain unresolved. Amount, receipt, and other values absent from provider responses remain unverified; operational conflict resolution and alerting remain incomplete. |
 | Timeout | A PostgreSQL polling worker moves aged `PENDING` attempts to `TIMEOUT`; late callbacks may still update them. | A lost STK response may leave no CheckoutRequestID, so it cannot be queried; retry currently does not require resolution. |
 | Settlement | No settlement entity exists. | Settlement records and settlement reconciliation are absent and deferred from v0.2. |
-| Reconciliation | Status-query responses are stored append-only and classified `MATCH`, `MISMATCH` or `NO_CALLBACK`. | The manual endpoint does not resolve attempt state; there are no settlement records or provider-evidence conflict exceptions. |
+| Reconciliation | Manual status responses and automatic callback-verification evidence are stored append-only and classified `MATCH`, `MISMATCH`, `NO_CALLBACK` or `UNVERIFIED`. Conflicts are visible without changing financial records. | No operator workflow resolves evidence conflicts or uncertain attempts; settlement records and settlement reconciliation are deferred. |
 
 Verified implementation references:
 
@@ -220,7 +220,7 @@ Verified implementation references:
 - What exact expiry and disabled-link rules apply independently of Payment Request fulfillment?
 - Which provider or banking record is authoritative for Settlement?
 
-The approved v0.2 decisions are recorded in ADR-001 and ADR-003–005: cumulative Payment Request fulfillment, explicit single-use/reusable Payment Link modes, status-query resolution of documented terminal outcomes, operator review for unqueryable uncertain dispatches, and append-only handling of conflicting evidence. These decisions are not yet enforced by the current implementation.
+The approved v0.2 decisions are recorded in ADR-001 and ADR-003–005. Database-backed initiation idempotency and append-only callback verification/conflict handling are implemented; cumulative fulfillment, Payment Link modes, uncertain-dispatch resolution, and audited operator recovery remain incomplete.
 
 ## Flag ADR conflicts
 

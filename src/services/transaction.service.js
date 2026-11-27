@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import { recordPaymentNotifications } from "./notification.service.js";
 import { processSuccessfulProviderTransaction } from "./accounting.service.js";
 import {
-    callbackMatchesDarajaStatus,
+    compareCallbackWithDarajaStatus,
+    extractCallbackMetadata,
     getAccessToken,
     generateTimestamp,
     generateStkPassword,
     queryStkStatus
 } from "./mpesa.service.js";
+import { enqueueMpesaCallback } from "./webhook.service.js";
 
 export class IdempotencyConflictError extends Error {
     constructor() {
@@ -441,13 +443,143 @@ export async function createPaymentAttempt({
     }
 }
 
+function compareStatusResponseWithTransaction(transaction, providerEvidence, response, priorEvidence) {
+    const conflictFields = [];
+    const unverifiedFields = [];
+    const callbackEvidence = priorEvidence
+        .filter((evidence) => evidence.evidence_type === "CALLBACK_VERIFICATION")
+        .map((evidence) => evidence.response_payload);
+    const storedCallback = providerEvidence?.evidence_payload?.callback ?? callbackEvidence[0]?.callback ?? {};
+    const statusCode = parseResultCode(response?.ResultCode ?? response?.resultCode);
+    const callbackResultCode = transaction.result_code ?? parseResultCode(storedCallback.ResultCode);
+    const responseCode = response?.ResponseCode == null
+        ? null
+        : parseResultCode(response.ResponseCode);
+
+    if (
+        statusCode != null
+        && [0, 1032].includes(statusCode)
+        && callbackResultCode != null
+        && [0, 1032].includes(callbackResultCode)
+        && statusCode !== callbackResultCode
+    ) {
+        conflictFields.push("resultCode");
+    }
+
+    for (const [field, conflictField, expected] of [
+        ["CheckoutRequestID", "checkoutRequestId", transaction.checkout_request_id],
+        ["MerchantRequestID", "merchantRequestId", transaction.merchant_request_id]
+    ]) {
+        if (response?.[field] != null && expected != null) {
+            if (!evidenceValueEquals(field, response[field], expected)) conflictFields.push(conflictField);
+        } else {
+            unverifiedFields.push(conflictField);
+        }
+    }
+
+    const responseMetadata = extractCallbackMetadata(response?.CallbackMetadata);
+    for (const evidence of callbackEvidence) {
+        const callback = evidence?.callback ?? {};
+        const metadata = evidence?.metadata ?? {};
+        const resultCode = parseResultCode(callback.ResultCode);
+        if (
+            statusCode != null
+            && [0, 1032].includes(statusCode)
+            && resultCode != null
+            && [0, 1032].includes(resultCode)
+            && statusCode !== resultCode
+        ) {
+            conflictFields.push("resultCode");
+        }
+        for (const [field, conflictField] of [
+            ["CheckoutRequestID", "checkoutRequestId"],
+            ["MerchantRequestID", "merchantRequestId"]
+        ]) {
+            if (
+                response?.[field] != null
+                && callback[field] != null
+                && !evidenceValueEquals(field, response[field], callback[field])
+            ) {
+                conflictFields.push(conflictField);
+            }
+        }
+        for (const [field, conflictField] of [
+            ["Amount", "amount"],
+            ["MpesaReceiptNumber", "receipt"],
+            ["PhoneNumber", "phoneNumber"],
+            ["TransactionDate", "transactionDate"]
+        ]) {
+            if (
+                Object.hasOwn(responseMetadata, field)
+                && Object.hasOwn(metadata, field)
+                && !evidenceValueEquals(field, responseMetadata[field], metadata[field])
+            ) {
+                conflictFields.push(conflictField);
+            }
+        }
+    }
+
+    const latestCallbackMetadata = callbackEvidence[0]?.metadata ?? {};
+    const callbackMetadata = providerEvidence?.evidence_payload?.metadata
+        ?? transaction.callback_metadata
+        ?? latestCallbackMetadata;
+    const storedFields = [
+        ["Amount", "amount", providerEvidence?.received_amount ?? transaction.paid_amount ?? callbackMetadata.Amount],
+        ["MpesaReceiptNumber", "receipt", providerEvidence?.provider_reference ?? transaction.mpesa_receipt_number ?? callbackMetadata.MpesaReceiptNumber],
+        ["PhoneNumber", "phoneNumber", transaction.paid_from_phone_number ?? callbackMetadata.PhoneNumber],
+        ["TransactionDate", "transactionDate", transaction.provider_transaction_date ?? callbackMetadata.TransactionDate]
+    ];
+    for (const [field, conflictField, expected] of storedFields) {
+        if (Object.hasOwn(responseMetadata, field) && expected != null) {
+            if (!evidenceValueEquals(field, responseMetadata[field], expected)) {
+                conflictFields.push(conflictField);
+            }
+        } else {
+            unverifiedFields.push(conflictField);
+        }
+    }
+
+    const responseIsTerminal = [0, 1032].includes(statusCode);
+    if (responseIsTerminal) {
+        for (const evidence of priorEvidence) {
+            const previousResponse = statusResponseFromEvidence(evidence);
+            const previousCode = parseResultCode(
+                previousResponse?.ResultCode ?? previousResponse?.resultCode
+            );
+            if (previousCode != null && [0, 1032].includes(previousCode)) {
+                conflictFields.push(...providerResponseDifferences(previousResponse, response));
+            }
+        }
+    }
+
+    const unverified = statusCode === null
+        || !responseIsTerminal
+        || (response?.ResponseCode != null && responseCode !== 0);
+    const agreement = conflictFields.length
+        ? "MISMATCH"
+        : unverified
+            ? "UNVERIFIED"
+            : callbackResultCode == null
+                ? "NO_CALLBACK"
+                : "MATCH";
+    return {
+        agreement,
+        callbackResultCode,
+        statusResultCode: statusCode,
+        conflictFields: [...new Set(conflictFields)],
+        unverifiedFields: [...new Set(unverifiedFields)]
+    };
+}
+
 export async function recordReconciliationResponse(transactionId, merchantId, response) {
     const pool = getDatabasePool();
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
         const transaction = await client.query(
-            `SELECT id, result_code
+            `SELECT id, result_code, checkout_request_id, merchant_request_id,
+                    callback_metadata, paid_amount, mpesa_receipt_number,
+                    paid_from_phone_number, provider_transaction_date
              FROM transactions
              WHERE id = $1 AND merchant_id = $2
              FOR UPDATE`,
@@ -458,17 +590,36 @@ export async function recordReconciliationResponse(transactionId, merchantId, re
             return false;
         }
 
-        const statusCode = Number.isInteger(response?.ResultCode)
-            ? response.ResultCode
-            : (typeof response?.ResultCode === "string" && /^-?\d+$/.test(response.ResultCode)
-                ? Number(response.ResultCode)
-                : null);
-        const callbackCode = transaction.rows[0].result_code;
-        const agreement = callbackCode == null
-            ? "NO_CALLBACK"
-            : (statusCode != null && callbackCode === statusCode ? "MATCH" : "MISMATCH");
+        const providerTransaction = await client.query(
+            `SELECT evidence_payload, received_amount, provider_reference
+             FROM provider_transactions
+             WHERE attempt_transaction_id = $1 AND merchant_id = $2`,
+            [transactionId, merchantId]
+        );
+        const priorEvidence = await client.query(
+            `SELECT evidence_type, response_payload
+             FROM reconciliation_events
+             WHERE merchant_id = $1 AND transaction_id = $2
+               AND evidence_type IN ('STATUS_QUERY', 'CALLBACK_VERIFICATION')
+             ORDER BY created_at DESC, id DESC`,
+            [merchantId, transactionId]
+        );
+        const verification = compareStatusResponseWithTransaction(
+            transaction.rows[0],
+            providerTransaction.rows[0],
+            response,
+            priorEvidence.rows
+        );
+        const responsePayload = {
+            ...response,
+            verification: {
+                agreement: verification.agreement,
+                conflictFields: verification.conflictFields,
+                unverifiedFields: verification.unverifiedFields
+            }
+        };
         const eventKey = `reconciliation:${transactionId}:${createHash("sha256")
-            .update(JSON.stringify(response))
+            .update(JSON.stringify(responsePayload))
             .digest("hex")}`;
 
         await client.query(
@@ -490,10 +641,10 @@ export async function recordReconciliationResponse(transactionId, merchantId, re
             [
                 merchantId,
                 transactionId,
-                statusCode,
-                callbackCode,
-                agreement,
-                JSON.stringify(response),
+                verification.statusResultCode,
+                verification.callbackResultCode,
+                verification.agreement,
+                JSON.stringify(responsePayload),
                 eventKey
             ]
         );
@@ -680,48 +831,9 @@ export async function saveStkResponse(transactionId, response) {
                 await client.query(
                     `UPDATE invoices SET status = 'PENDING', updated_at = NOW()
                      WHERE id = (SELECT invoice_id FROM payments WHERE id = $1)
-                                     AND status IN ('SENT', 'OVERDUE')`,
+                       AND status IN ('SENT', 'OVERDUE')`,
                     [result.rows[0].payment_id]
                 );
-
-            if (result.rows[0].checkout_request_id) {
-                const pendingCallback = await client.query(
-                    `SELECT id, payload
-                     FROM webhook_events
-                     WHERE event_key = $1 AND status = 'RECEIVED'
-                     FOR UPDATE`,
-                    [`mpesa:${result.rows[0].checkout_request_id}`]
-                );
-                if (pendingCallback.rowCount) {
-                    const payload = pendingCallback.rows[0].payload;
-                    const transaction = await client.query(
-                        `SELECT t.id, t.payment_id, p.amount, p.reference,
-                                m.user_id AS owner_user_id, m.business_name, u.email AS owner_email
-                         FROM transactions t
-                         JOIN payments p ON p.id = t.payment_id
-                         LEFT JOIN merchants m ON m.id = p.merchant_id
-                         LEFT JOIN users u ON u.id = m.user_id
-                         WHERE t.checkout_request_id = $1
-                         FOR UPDATE OF t`,
-                        [result.rows[0].checkout_request_id]
-                    );
-                    if (transaction.rowCount) {
-                        await updateTransactionFromCallback(
-                            client,
-                            transaction.rows[0],
-                            payload.callback,
-                            payload.metadata
-                        );
-                        await client.query(
-                            `UPDATE webhook_events
-                             SET status = 'PROCESSED', processed_at = NOW(), claimed_at = NULL,
-                                 last_error = NULL, updated_at = NOW()
-                             WHERE id = $1`,
-                            [pendingCallback.rows[0].id]
-                        );
-                    }
-                }
-            }
         }
         await client.query("COMMIT");
     } catch (error) {
@@ -807,20 +919,24 @@ export async function markExpiredPendingAttempts({ timeoutSeconds, limit = 100 }
 }
 
 export function determineCallbackOutcome(resultCode, metadata, requestedAmount) {
-    if (resultCode === 0) {
-        const paidAmount = Number(metadata.Amount);
-        const hasValidAmount = Number.isFinite(paidAmount) && paidAmount > 0;
-
+    if (resultCode === 1032) {
+        return { status: "CANCELLED" };
+    }
+    if (resultCode !== 0) {
         return {
-            status: hasValidAmount ? "SUCCESS" : "FAILED",
-            ...(hasValidAmount ? { paidAmount, amountMatches: paidAmount === requestedAmount } : {
-                failureReason: "SUCCESS_CALLBACK_MISSING_VALID_AMOUNT"
-            })
+            status: "UNVERIFIED",
+            unverifiedReason: "UNRECOGNIZED_DARAJA_RESULT_CODE"
         };
     }
 
+    const paidAmount = Number(metadata.Amount);
+    const hasValidAmount = Number.isFinite(paidAmount) && paidAmount > 0;
+
     return {
-        status: resultCode === 1032 ? "CANCELLED" : "FAILED"
+        status: hasValidAmount ? "SUCCESS" : "UNVERIFIED",
+        ...(hasValidAmount ? { paidAmount, amountMatches: paidAmount === requestedAmount } : {
+            unverifiedReason: "SUCCESS_CALLBACK_MISSING_VALID_AMOUNT"
+        })
     };
 }
 
@@ -832,6 +948,145 @@ function parseResultCode(value) {
         return Number(value);
     }
     return null;
+}
+
+function evidenceValueEquals(field, left, right) {
+    if (left == null && right == null) return true;
+    if (left == null || right == null) return false;
+    if (field === "Amount" || field === "ResultCode") {
+        const leftNumber = Number(left);
+        const rightNumber = Number(right);
+        if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+            return leftNumber === rightNumber;
+        }
+    }
+    return String(left) === String(right);
+}
+
+function callbackEvidenceDifferences(existingEvidence, callback, metadata) {
+    const previousCallback = existingEvidence?.callback ?? {};
+    const previousMetadata = existingEvidence?.metadata ?? {};
+    const differences = [];
+    for (const [field, conflictField] of [
+        ["CheckoutRequestID", "checkoutRequestId"],
+        ["MerchantRequestID", "merchantRequestId"],
+        ["ResultCode", "resultCode"]
+    ]) {
+        if (!evidenceValueEquals(field, previousCallback[field], callback[field])) {
+            differences.push(conflictField);
+        }
+    }
+    for (const [field, conflictField] of [
+        ["Amount", "amount"],
+        ["MpesaReceiptNumber", "receipt"],
+        ["PhoneNumber", "phoneNumber"],
+        ["TransactionDate", "transactionDate"]
+    ]) {
+        if (!evidenceValueEquals(field, previousMetadata[field], metadata[field])) {
+            differences.push(conflictField);
+        }
+    }
+    return differences;
+}
+
+function statusResponseFromEvidence(evidence) {
+    if (evidence.evidence_type === "CALLBACK_VERIFICATION") {
+        return evidence.response_payload?.statusResponse ?? null;
+    }
+    return evidence.response_payload;
+}
+
+function providerResponseDifferences(previousResponse, currentResponse) {
+    if (!previousResponse || !currentResponse) return [];
+    const differences = [];
+    const previousResultCode = parseResultCode(previousResponse.ResultCode ?? previousResponse.resultCode);
+    const currentResultCode = parseResultCode(currentResponse.ResultCode ?? currentResponse.resultCode);
+    if (
+        previousResultCode != null
+        && currentResultCode != null
+        && previousResultCode !== currentResultCode
+    ) {
+        differences.push("providerResultCode");
+    }
+
+    for (const [field, conflictField] of [
+        ["CheckoutRequestID", "providerCheckoutRequestId"],
+        ["MerchantRequestID", "providerMerchantRequestId"]
+    ]) {
+        if (
+            previousResponse[field] != null
+            && currentResponse[field] != null
+            && !evidenceValueEquals(field, previousResponse[field], currentResponse[field])
+        ) {
+            differences.push(conflictField);
+        }
+    }
+
+    const previousMetadata = extractCallbackMetadata(previousResponse.CallbackMetadata);
+    const currentMetadata = extractCallbackMetadata(currentResponse.CallbackMetadata);
+    for (const [field, conflictField] of [
+        ["Amount", "providerAmount"],
+        ["MpesaReceiptNumber", "providerReceipt"],
+        ["PhoneNumber", "providerPhoneNumber"],
+        ["TransactionDate", "providerTransactionDate"]
+    ]) {
+        if (
+            Object.hasOwn(previousMetadata, field)
+            && Object.hasOwn(currentMetadata, field)
+            && !evidenceValueEquals(field, previousMetadata[field], currentMetadata[field])
+        ) {
+            differences.push(conflictField);
+        }
+    }
+    return differences;
+}
+
+async function recordCallbackVerification(client, transaction, callback, metadata, context, verification) {
+    const resultCode = verification.statusResultCode ?? null;
+    const callbackResultCode = verification.callbackResultCode ?? parseResultCode(callback.ResultCode);
+    const responsePayload = {
+        callback,
+        metadata,
+        rawPayload: context.rawPayload ?? { Body: { stkCallback: callback } },
+        ...(context.statusResponse === undefined ? {} : { statusResponse: context.statusResponse }),
+        ...(context.statusQueryError ? { statusQueryError: context.statusQueryError } : {}),
+        verification: {
+            agreement: verification.agreement,
+            conflictFields: verification.conflictFields ?? [],
+            unverifiedFields: verification.unverifiedFields ?? []
+        }
+    };
+    const eventKey = `callback-verification:${transaction.id}:${createHash("sha256")
+        .update(JSON.stringify(responsePayload))
+        .digest("hex")}`;
+
+    await client.query(
+        `INSERT INTO reconciliation_events (
+            merchant_id, transaction_id, evidence_type, result_code,
+            callback_result_code, agreement, response_payload, event_key
+         )
+         VALUES ($1, $2, 'CALLBACK_VERIFICATION', $3, $4, $5, $6, $7)
+         ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+        [
+            transaction.merchant_id,
+            transaction.id,
+            resultCode,
+            callbackResultCode,
+            verification.agreement,
+            JSON.stringify(responsePayload),
+            eventKey
+        ]
+    );
+}
+
+async function markCallbackEventProcessed(client, eventId) {
+    await client.query(
+        `UPDATE webhook_events
+         SET status = 'PROCESSED', processed_at = COALESCE(processed_at, NOW()),
+             claimed_at = NULL, last_error = NULL, updated_at = NOW()
+         WHERE id = $1`,
+        [eventId]
+    );
 }
 
 async function updateTransactionFromCallback(client, transaction, callback, metadata) {
@@ -957,7 +1212,7 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
     return { matched: true, duplicate: false, status: outcome.status };
 }
 
-export async function applyMpesaCallback(callback, metadata) {
+export async function applyMpesaCallback(callback, metadata, eventContext = {}) {
     const checkoutRequestId = callback?.CheckoutRequestID;
     const resultCode = parseResultCode(callback?.ResultCode);
 
@@ -965,50 +1220,67 @@ export async function applyMpesaCallback(callback, metadata) {
         return { matched: false, reason: "INVALID_CALLBACK" };
     }
 
+    let webhookEvent = eventContext;
+    if (!webhookEvent.eventId) {
+        webhookEvent = await enqueueMpesaCallback(
+            callback,
+            metadata,
+            eventContext.rawPayload ?? { Body: { stkCallback: callback } }
+        );
+        if (!webhookEvent.accepted) {
+            return { matched: false, reason: webhookEvent.reason ?? "INVALID_CALLBACK" };
+        }
+    }
+
+    const pool = getDatabasePool();
+    const associated = await pool.query(
+        `SELECT t.id, t.checkout_request_id
+         FROM transactions t
+         WHERE t.checkout_request_id = $1`,
+        [checkoutRequestId]
+    );
+    if (!associated.rowCount) {
+        return {
+            matched: false,
+            reason: "TRANSACTION_NOT_FOUND",
+            storedForRetry: true
+        };
+    }
+
+    let statusResponse;
+    let statusQueryError;
     try {
         const accessToken = await getAccessToken();
-        const statusResponse = await queryStkStatus({
+        statusResponse = await queryStkStatus({
             shortCode: process.env.MPESA_SHORTCODE,
             passkey: process.env.MPESA_PASSKEY,
             timestamp: generateTimestamp(),
             checkoutRequestId
         }, accessToken);
-        if (!callbackMatchesDarajaStatus(callback, statusResponse)) {
-            return {
-                matched: false,
-                reason: "DARAJA_STATUS_MISMATCH",
-                storedForRetry: true,
-                statusResponse
-            };
-        }
     } catch (error) {
-        return {
-            matched: false,
-            reason: "DARAJA_STATUS_VERIFICATION_FAILED",
-            storedForRetry: true,
-            error: error.message
+        statusResponse = error.response?.data ?? null;
+        statusQueryError = {
+            message: String(error.message ?? "Daraja status query failed").slice(0, 1000),
+            ...(error.code ? { code: String(error.code).slice(0, 100) } : {})
         };
     }
 
-    const pool = getDatabasePool();
     const client = await pool.connect();
 
     try {
         await client.query("BEGIN");
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [checkoutRequestId]);
-        const eventKey = `mpesa:${checkoutRequestId}`;
-        await client.query(
-            `INSERT INTO webhook_events (provider, event_type, event_key, payload, status, next_attempt_at)
-             VALUES ('MPESA', 'STK_CALLBACK', $1, $2, 'RECEIVED', NOW())
-             ON CONFLICT (event_key) DO NOTHING`,
-            [eventKey, JSON.stringify({ callback, metadata })]
-        );
         const event = await client.query(
-            "SELECT id, status FROM webhook_events WHERE event_key = $1 FOR UPDATE",
-            [eventKey]
+            "SELECT id FROM webhook_events WHERE id = $1 FOR UPDATE",
+            [webhookEvent.eventId]
         );
+        if (!event.rowCount) {
+            throw new Error("Persisted callback event was not found");
+        }
         const existing = await client.query(
-            `SELECT t.id, t.payment_id, t.status, t.merchant_id, p.amount, p.reference,
+            `SELECT t.id, t.payment_id, t.status, t.merchant_id, t.checkout_request_id,
+                    t.merchant_request_id, t.result_code, t.callback_metadata,
+                    p.amount, p.reference,
                     m.user_id AS owner_user_id, m.business_name, u.email AS owner_email
              FROM transactions t
              JOIN payments p ON p.id = t.payment_id
@@ -1022,37 +1294,205 @@ export async function applyMpesaCallback(callback, metadata) {
         if (!existing.rowCount) {
             await client.query(
                 `UPDATE webhook_events
-                 SET status = 'RECEIVED', last_error = 'Awaiting transaction association',
+                 SET status = 'RECEIVED',
+                     payload = jsonb_set(payload, '{statusQueryEvidence}',
+                         COALESCE(payload->'statusQueryEvidence', '[]'::jsonb) || $2::jsonb, true),
+                     last_error = 'Awaiting transaction association',
                      next_attempt_at = GREATEST(next_attempt_at, NOW()), claimed_at = NULL,
                      updated_at = NOW()
-                 WHERE event_key = $1`,
-                [eventKey]
+                 WHERE id = $1`,
+                [
+                    webhookEvent.eventId,
+                    JSON.stringify([{
+                        statusResponse,
+                        ...(statusQueryError ? { statusQueryError } : {})
+                    }])
+                ]
             );
             await client.query("COMMIT");
             return { matched: false, reason: "TRANSACTION_NOT_FOUND", storedForRetry: true };
         }
 
         const transaction = existing.rows[0];
-        if (transaction.status !== "PENDING" && transaction.status !== "TIMEOUT") {
-            await client.query(
-                `UPDATE webhook_events
-                 SET status = 'PROCESSED', processed_at = COALESCE(processed_at, NOW()),
-                     claimed_at = NULL, last_error = NULL, updated_at = NOW()
-                 WHERE id = $1`,
-                [event.rows[0].id]
+        let verification = statusQueryError
+            ? {
+                agreement: "UNVERIFIED",
+                callbackResultCode: resultCode,
+                statusResultCode: null,
+                conflictFields: [],
+                unverifiedFields: ["resultCode"]
+            }
+            : compareCallbackWithDarajaStatus(callback, metadata, transaction, statusResponse);
+
+        const providerTransaction = await client.query(
+            `SELECT id, outcome, evidence_payload
+             FROM provider_transactions
+             WHERE attempt_transaction_id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [transaction.id, transaction.merchant_id]
+        );
+        const conflictFields = [...verification.conflictFields];
+        if (providerTransaction.rowCount) {
+            conflictFields.push(...callbackEvidenceDifferences(
+                providerTransaction.rows[0].evidence_payload,
+                callback,
+                metadata
+            ));
+        }
+
+        const otherCallbackEvidence = await client.query(
+            `SELECT id, payload
+             FROM webhook_events
+             WHERE provider = 'MPESA'
+               AND event_type = 'STK_CALLBACK'
+               AND payload->'callback'->>'CheckoutRequestID' = $1
+               AND id <> $2`,
+            [checkoutRequestId, webhookEvent.eventId]
+        );
+        for (const evidence of otherCallbackEvidence.rows) {
+            conflictFields.push(...callbackEvidenceDifferences(
+                evidence.payload,
+                callback,
+                metadata
+            ));
+        }
+
+        if (metadata.MpesaReceiptNumber) {
+            const receiptUse = await client.query(
+                `SELECT EXISTS (
+                    SELECT 1 FROM transactions
+                    WHERE mpesa_receipt_number = $1 AND id <> $2
+                 ) AS already_associated`,
+                [String(metadata.MpesaReceiptNumber), transaction.id]
             );
+            if (receiptUse.rows[0].already_associated) {
+                conflictFields.push("receiptAlreadyAssociated");
+            }
+        }
+
+        if (
+            !statusQueryError
+            && verification.agreement !== "UNVERIFIED"
+            && verification.statusResultCode !== null
+        ) {
+            const priorEvidence = await client.query(
+                `SELECT evidence_type, result_code, agreement, response_payload
+                 FROM reconciliation_events
+                 WHERE transaction_id = $1
+                   AND evidence_type IN ('STATUS_QUERY', 'CALLBACK_VERIFICATION')
+                 ORDER BY created_at DESC, id DESC`,
+                [transaction.id]
+            );
+            for (const evidence of priorEvidence.rows) {
+                if (evidence.evidence_type === "CALLBACK_VERIFICATION") {
+                    conflictFields.push(...callbackEvidenceDifferences(
+                        evidence.response_payload,
+                        callback,
+                        metadata
+                    ));
+                }
+                const previousStatusResponse = statusResponseFromEvidence(evidence);
+                const previousStatusCode = parseResultCode(
+                    previousStatusResponse?.ResultCode ?? previousStatusResponse?.resultCode
+                );
+                if (
+                    previousStatusCode != null
+                    && [0, 1032].includes(previousStatusCode)
+                    && [0, 1032].includes(verification.statusResultCode)
+                ) {
+                    conflictFields.push(...providerResponseDifferences(
+                        previousStatusResponse,
+                        statusResponse
+                    ));
+                }
+            }
+        }
+
+        if (conflictFields.length) {
+            verification = {
+                ...verification,
+                agreement: "MISMATCH",
+                conflictFields: [...new Set(conflictFields)]
+            };
+        }
+
+        const callbackOutcome = determineCallbackOutcome(
+            resultCode,
+            metadata,
+            Number(transaction.amount)
+        );
+        const missingSuccessfulAmount = callbackOutcome.unverifiedReason === "SUCCESS_CALLBACK_MISSING_VALID_AMOUNT";
+        if (missingSuccessfulAmount && verification.agreement === "MATCH") {
+            verification = {
+                ...verification,
+                agreement: "UNVERIFIED",
+                unverifiedFields: [...new Set([...verification.unverifiedFields, "amount"])]
+            };
+        }
+
+        await recordCallbackVerification(
+            client,
+            transaction,
+            callback,
+            metadata,
+            {
+                ...webhookEvent,
+                statusResponse,
+                ...(statusQueryError ? { statusQueryError } : {})
+            },
+            verification
+        );
+
+        if (verification.agreement === "MISMATCH") {
+            await markCallbackEventProcessed(client, webhookEvent.eventId);
+            await client.query("COMMIT");
+            return {
+                matched: true,
+                conflict: true,
+                status: transaction.status,
+                conflictFields: verification.conflictFields
+            };
+        }
+
+        if (!statusQueryError && missingSuccessfulAmount) {
+            await markCallbackEventProcessed(client, webhookEvent.eventId);
+            await client.query("COMMIT");
+            return {
+                matched: true,
+                unverified: true,
+                status: transaction.status,
+                reason: callbackOutcome.unverifiedReason
+            };
+        }
+
+        if (statusQueryError || verification.agreement === "UNVERIFIED") {
+            await client.query("COMMIT");
+            return {
+                matched: false,
+                reason: statusQueryError ? "DARAJA_STATUS_VERIFICATION_FAILED" : "DARAJA_STATUS_UNVERIFIED",
+                storedForRetry: true,
+                error: statusQueryError?.message
+            };
+        }
+
+        if (providerTransaction.rowCount) {
+            await markCallbackEventProcessed(client, webhookEvent.eventId);
+            await client.query("COMMIT");
+            return {
+                matched: true,
+                duplicate: true,
+                status: transaction.status
+            };
+        }
+
+        if (transaction.status !== "PENDING" && transaction.status !== "TIMEOUT") {
+            await markCallbackEventProcessed(client, webhookEvent.eventId);
             await client.query("COMMIT");
             return { matched: true, duplicate: true, status: transaction.status };
         }
 
         const outcome = await updateTransactionFromCallback(client, transaction, callback, metadata);
-        await client.query(
-            `UPDATE webhook_events
-             SET status = 'PROCESSED', processed_at = NOW(), claimed_at = NULL,
-                 last_error = NULL, updated_at = NOW()
-             WHERE id = $1`,
-            [event.rows[0].id]
-        );
+        await markCallbackEventProcessed(client, webhookEvent.eventId);
         await client.query("COMMIT");
         return outcome;
     } catch (error) {
