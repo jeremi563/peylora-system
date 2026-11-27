@@ -277,6 +277,10 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
         if (paymentId) {
             await pool.query("DELETE FROM audit_logs WHERE event_key = $1", [`payment-created:${paymentId}`]);
             await pool.query(
+                "DELETE FROM payment_idempotency_operations WHERE payment_id = $1",
+                [paymentId]
+            );
+            await pool.query(
                 `DELETE FROM payment_allocations
                  WHERE provider_transaction_id IN (
                      SELECT id FROM provider_transactions

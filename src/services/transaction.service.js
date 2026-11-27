@@ -12,9 +12,157 @@ import {
 
 export class IdempotencyConflictError extends Error {
     constructor() {
-        super("Idempotency key was already used for a different payment request");
+        super("Idempotency key was already used for a different payment operation or request");
         this.name = "IdempotencyConflictError";
     }
+}
+
+function hashPaymentRequest({
+    amount,
+    phoneNumber,
+    description,
+    paymentLinkId,
+    invoiceId
+}) {
+    return createHash("sha256")
+        .update(JSON.stringify({
+            amount,
+            phoneNumber,
+            description: description ?? null,
+            paymentLinkId: paymentLinkId ?? null,
+            invoiceId: invoiceId ?? null
+        }))
+        .digest("hex");
+}
+
+function hashRetryRequest({
+    paymentId,
+    amount,
+    phoneNumber,
+    description,
+    paymentLinkId,
+    invoiceId
+}) {
+    return createHash("sha256")
+        .update(JSON.stringify({
+            paymentId,
+            amount,
+            phoneNumber,
+            description: description ?? null,
+            paymentLinkId: paymentLinkId ?? null,
+            invoiceId: invoiceId ?? null
+        }))
+        .digest("hex");
+}
+
+async function getIdempotentOperation(client, merchantId, idempotencyKey) {
+    const result = await client.query(
+        `SELECT o.operation_type, o.request_hash, o.payment_id, o.attempt_id,
+                p.reference, p.amount, p.phone_number, p.description,
+                p.payment_link_id, p.invoice_id, p.status AS payment_status,
+                t.id AS transaction_id, t.account_reference, t.status AS transaction_status,
+                t.checkout_request_id, t.stk_response_code, t.stk_response_description
+         FROM payment_idempotency_operations o
+         JOIN payments p
+           ON p.id = o.payment_id AND p.merchant_id = o.merchant_id
+         LEFT JOIN transactions t
+           ON t.id = o.attempt_id
+          AND t.payment_id = o.payment_id
+          AND t.merchant_id = o.merchant_id
+         WHERE o.merchant_id = $1 AND o.idempotency_key = $2`,
+        [merchantId, idempotencyKey]
+    );
+    return result.rows[0] ?? null;
+}
+
+function idempotentOperationMatches(operation, operationType, requestHash) {
+    if (!operation || operation.operation_type !== operationType) {
+        return false;
+    }
+
+    const storedHash = operation.request_hash ?? (
+        operationType === "INITIAL"
+            ? hashPaymentRequest({
+                amount: Number(operation.amount),
+                phoneNumber: operation.phone_number,
+                description: operation.description,
+                paymentLinkId: operation.payment_link_id,
+                invoiceId: operation.invoice_id
+            })
+            : null
+    );
+    return storedHash === requestHash;
+}
+
+async function persistLegacyRequestHash(client, operation, merchantId, idempotencyKey, requestHash) {
+    if (operation.request_hash === null) {
+        await client.query(
+            `UPDATE payment_idempotency_operations
+             SET request_hash = $3
+             WHERE merchant_id = $1 AND idempotency_key = $2 AND request_hash IS NULL`,
+            [merchantId, idempotencyKey, requestHash]
+        );
+    }
+}
+
+function reusedTransaction(operation) {
+    return {
+        _id: operation.transaction_id ?? operation.attempt_id,
+        paymentId: operation.payment_id,
+        requestedAmount: Number(operation.amount),
+        status: operation.transaction_status ?? operation.payment_status,
+        accountReference: operation.account_reference ?? operation.reference,
+        checkoutRequestId: operation.checkout_request_id,
+        stkResponseCode: operation.stk_response_code,
+        stkResponseDescription: operation.stk_response_description,
+        reused: true
+    };
+}
+
+export async function findIdempotentRetry({
+    merchantId,
+    paymentId,
+    idempotencyKey,
+    amount,
+    phoneNumber,
+    description,
+    paymentLinkId,
+    invoiceId
+}) {
+    const operation = await getIdempotentOperation(
+        getDatabasePool(),
+        merchantId,
+        idempotencyKey
+    );
+    if (!operation) {
+        return null;
+    }
+
+    const requestHash = hashRetryRequest({
+        paymentId,
+        amount,
+        phoneNumber,
+        description,
+        paymentLinkId,
+        invoiceId
+    });
+    if (
+        operation.payment_id !== paymentId
+        || !idempotentOperationMatches(operation, "RETRY", requestHash)
+    ) {
+        throw new IdempotencyConflictError();
+    }
+
+    if (operation.request_hash === null) {
+        await getDatabasePool().query(
+            `UPDATE payment_idempotency_operations
+             SET request_hash = $3
+             WHERE merchant_id = $1 AND idempotency_key = $2 AND request_hash IS NULL`,
+            [merchantId, idempotencyKey, requestHash]
+        );
+    }
+
+    return reusedTransaction(operation);
 }
 
 export async function createPendingTransaction({
@@ -30,18 +178,35 @@ export async function createPendingTransaction({
 }) {
     const pool = getDatabasePool();
     const client = await pool.connect();
-    const requestHash = createHash("sha256")
-        .update(JSON.stringify({
-            amount: requestedAmount,
-            phoneNumber,
-            description: description ?? null,
-            paymentLinkId: paymentLinkId ?? null,
-            invoiceId: invoiceId ?? null
-        }))
-        .digest("hex");
+    const requestHash = hashPaymentRequest({
+        amount: requestedAmount,
+        phoneNumber,
+        description,
+        paymentLinkId,
+        invoiceId
+    });
 
     try {
         await client.query("BEGIN");
+        if (idempotencyKey) {
+            const existing = await getIdempotentOperation(client, merchantId, idempotencyKey);
+            if (existing) {
+                if (!idempotentOperationMatches(existing, "INITIAL", requestHash)) {
+                    throw new IdempotencyConflictError();
+                }
+
+                await persistLegacyRequestHash(
+                    client,
+                    existing,
+                    merchantId,
+                    idempotencyKey,
+                    requestHash
+                );
+                await client.query("COMMIT");
+                return reusedTransaction(existing);
+            }
+        }
+
         const payment = await client.query(
             `INSERT INTO payments (
                     merchant_id, payment_link_id, invoice_id, reference, amount, currency, phone_number, description, status,
@@ -55,36 +220,20 @@ export async function createPendingTransaction({
         );
 
         if (!payment.rowCount) {
-            const existing = await client.query(
-                `SELECT p.id AS payment_id, p.amount, p.status AS payment_status,
-                        p.reference, p.idempotency_request_hash, t.id AS transaction_id,
-                        t.status AS transaction_status, t.checkout_request_id,
-                        t.stk_response_code, t.stk_response_description
-                 FROM payments p
-                 LEFT JOIN LATERAL (
-                     SELECT * FROM transactions WHERE payment_id = p.id
-                     ORDER BY created_at DESC LIMIT 1
-                 ) t ON true
-                 WHERE p.merchant_id = $1 AND p.idempotency_key = $2`,
-                [merchantId, idempotencyKey]
-            );
-            if (!existing.rowCount || existing.rows[0].idempotency_request_hash !== requestHash) {
+            const existing = await getIdempotentOperation(client, merchantId, idempotencyKey);
+            if (!idempotentOperationMatches(existing, "INITIAL", requestHash)) {
                 throw new IdempotencyConflictError();
             }
 
-            const row = existing.rows[0];
+            await persistLegacyRequestHash(
+                client,
+                existing,
+                merchantId,
+                idempotencyKey,
+                requestHash
+            );
             await client.query("COMMIT");
-            return {
-                _id: row.transaction_id,
-                paymentId: row.payment_id,
-                requestedAmount: Number(row.amount),
-                status: row.transaction_status ?? row.payment_status,
-                accountReference: row.reference,
-                checkoutRequestId: row.checkout_request_id,
-                stkResponseCode: row.stk_response_code,
-                stkResponseDescription: row.stk_response_description,
-                reused: true
-            };
+            return reusedTransaction(existing);
         }
 
         const transaction = await client.query(
@@ -111,6 +260,36 @@ export async function createPendingTransaction({
                 `payment-created:${payment.rows[0].id}`
             ]
         );
+
+        if (idempotencyKey) {
+            const operation = await client.query(
+                `INSERT INTO payment_idempotency_operations (
+                    merchant_id, idempotency_key, operation_type, request_hash,
+                    payment_id, attempt_id
+                 )
+                 VALUES ($1, $2, 'INITIAL', $3, $4, $5)
+                 ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+                 RETURNING attempt_id`,
+                [
+                    merchantId,
+                    idempotencyKey,
+                    requestHash,
+                    payment.rows[0].id,
+                    transaction.rows[0].id
+                ]
+            );
+
+            if (!operation.rowCount) {
+                const existing = await getIdempotentOperation(client, merchantId, idempotencyKey);
+                if (!idempotentOperationMatches(existing, "INITIAL", requestHash)) {
+                    throw new IdempotencyConflictError();
+                }
+
+                await client.query("ROLLBACK");
+                return reusedTransaction(existing);
+            }
+        }
+
         await client.query("COMMIT");
 
         return {
@@ -147,13 +326,16 @@ export async function createPaymentAttempt({
     accountReference,
     phoneNumber,
     requestedAmount,
+    description,
+    paymentLinkId,
+    invoiceId,
     idempotencyKey
 }) {
     const client = await getDatabasePool().connect();
     try {
         await client.query("BEGIN");
         const payment = await client.query(
-            `SELECT id, merchant_id
+            `SELECT id, merchant_id, payment_link_id, invoice_id
              FROM payments
              WHERE id = $1 AND merchant_id = $2
              FOR UPDATE`,
@@ -162,6 +344,31 @@ export async function createPaymentAttempt({
         if (!payment.rowCount) {
             await client.query("ROLLBACK");
             return null;
+        }
+
+        const requestHash = hashRetryRequest({
+            paymentId,
+            amount: requestedAmount,
+            phoneNumber,
+            description,
+            paymentLinkId: payment.rows[0].payment_link_id ?? paymentLinkId,
+            invoiceId: payment.rows[0].invoice_id ?? invoiceId
+        });
+
+        if (idempotencyKey) {
+            const existing = await getIdempotentOperation(client, merchantId, idempotencyKey);
+            if (existing) {
+                if (
+                    existing.payment_id !== paymentId
+                    || !idempotentOperationMatches(existing, "RETRY", requestHash)
+                ) {
+                    throw new IdempotencyConflictError();
+                }
+
+                await persistLegacyRequestHash(client, existing, merchantId, idempotencyKey, requestHash);
+                await client.query("COMMIT");
+                return reusedTransaction(existing);
+            }
         }
 
         const attempt = await client.query(
@@ -187,6 +394,33 @@ export async function createPaymentAttempt({
                AND status IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID')`,
             [paymentId]
         );
+
+        if (idempotencyKey) {
+            const operation = await client.query(
+                `INSERT INTO payment_idempotency_operations (
+                    merchant_id, idempotency_key, operation_type, request_hash,
+                    payment_id, attempt_id
+                 )
+                 VALUES ($1, $2, 'RETRY', $3, $4, $5)
+                 ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+                 RETURNING attempt_id`,
+                [merchantId, idempotencyKey, requestHash, paymentId, attempt.rows[0].id]
+            );
+
+            if (!operation.rowCount) {
+                const existing = await getIdempotentOperation(client, merchantId, idempotencyKey);
+                if (
+                    existing?.payment_id !== paymentId
+                    || !idempotentOperationMatches(existing, "RETRY", requestHash)
+                ) {
+                    throw new IdempotencyConflictError();
+                }
+
+                await client.query("ROLLBACK");
+                return reusedTransaction(existing);
+            }
+        }
+
         await client.query("COMMIT");
 
         return {

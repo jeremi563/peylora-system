@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowDownToLine, Check, CheckCircle2, ChevronLeft, ChevronRight, Copy, LoaderCircle, Plus, Search, TriangleAlert } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
@@ -19,6 +19,7 @@ export default function PaymentsPage() {
   const [copied, setCopied] = useState("");
   const [toast, setToast] = useState(null);
   const [form, setForm] = useState({ amount: "", phoneNumber: "", description: "" });
+  const paymentIntent = useRef(null);
 
   async function load(page = 1) {
     setLoading(true);
@@ -80,12 +81,26 @@ export default function PaymentsPage() {
     event.preventDefault();
     setBusy(true);
     setError("");
+    const requestBody = {
+      amount: Number(form.amount),
+      phoneNumber: form.phoneNumber,
+      description: form.description || undefined
+    };
+    const requestFingerprint = JSON.stringify(requestBody);
+    if (paymentIntent.current?.fingerprint !== requestFingerprint) {
+      paymentIntent.current = {
+        fingerprint: requestFingerprint,
+        key: crypto.randomUUID()
+      };
+    }
+
     try {
       const result = await apiRequest("/api/payments", {
         method: "POST",
-        headers: { "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({ amount: Number(form.amount), phoneNumber: form.phoneNumber, description: form.description || undefined })
+        headers: { "Idempotency-Key": paymentIntent.current.key },
+        body: JSON.stringify(requestBody)
       });
+      paymentIntent.current = null;
       setModal(false);
       const initialPayment = {
         id: result.paymentId,
@@ -99,7 +114,12 @@ export default function PaymentsPage() {
       };
       setForm({ amount: "", phoneNumber: "", description: "" });
       setSelected(initialPayment);
-      setToast({ type: "info", message: `STK push sent to ${initialPayment.phone_number}` });
+      setToast({
+        type: result.reused ? "success" : "info",
+        message: result.reused
+          ? "Existing payment attempt restored without another STK push"
+          : `STK push sent to ${initialPayment.phone_number}`
+      });
       await load(1);
     } catch (requestError) {
       setError(requestError.message);
@@ -237,7 +257,7 @@ export default function PaymentsPage() {
       </section>
 
       {modal && (
-        <Modal title="New M-Pesa payment" onClose={() => setModal(false)}>
+        <Modal title="New M-Pesa payment" onClose={() => { paymentIntent.current = null; setModal(false); }}>
           <form className="stack-form" onSubmit={createPayment}>
             <div className="form-note">
               The customer will receive an STK prompt immediately. Payment is verified and completed only after Safaricom returns the callback.
@@ -255,7 +275,7 @@ export default function PaymentsPage() {
               <input maxLength="500" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Order or invoice memo" />
             </label>
             <div className="modal-actions">
-              <button className="button button-subtle" type="button" onClick={() => setModal(false)}>Cancel</button>
+              <button className="button button-subtle" type="button" onClick={() => { paymentIntent.current = null; setModal(false); }}>Cancel</button>
               <button className="button button-primary" type="submit" disabled={busy}>
                 {busy ? "Sending STK…" : "Send STK prompt"}
               </button>
