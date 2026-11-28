@@ -139,6 +139,15 @@ export async function closeRateLimitStore() {
 export function apiErrorHandler(error, req, res, next) {
     if (res.headersSent) return next(error);
 
+    if (error.code === "LIMIT_FILE_SIZE" || error.code === "LIMIT_FILE_COUNT") {
+        return res.status(413).json({
+            success: false,
+            message: "Settlement evidence file exceeds the allowed upload limit",
+            code: "PAYLOAD_TOO_LARGE",
+            requestId: req.requestId
+        });
+    }
+
     if (error.code === "CORS_ORIGIN_DENIED") {
         return res.status(403).json({
             success: false,
