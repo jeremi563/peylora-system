@@ -2058,6 +2058,109 @@ The date range must not exceed 366 calendar days.
         },
 
         // ====================================================================
+        // SETTLEMENT EVIDENCE
+        // ====================================================================
+        "/api/settlement-evidence/profiles": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List settlement source profiles",
+                description: "Returns operator-managed CSV/XLSX source profiles available to the Merchant.",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Settlement source profiles" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement-evidence/imports": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List settlement evidence imports",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Merchant settlement evidence imports" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            },
+            post: {
+                tags: ["Settlement"],
+                summary: "Upload settlement evidence",
+                description: "Uploads a merchant-owned CSV or XLSX file under an operator-managed source profile.",
+                security: [{ BearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "multipart/form-data": {
+                            schema: {
+                                type: "object",
+                                required: ["profileId", "file"],
+                                properties: {
+                                    profileId: { type: "string", format: "uuid" },
+                                    file: { type: "string", format: "binary" }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    201: { description: "Evidence imported" },
+                    200: { description: "Identical evidence already imported" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    413: { description: "Evidence exceeds the 5 MB upload limit" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement-evidence/imports/{importId}": {
+            get: {
+                tags: ["Settlement"],
+                summary: "Get settlement evidence import and parsed rows",
+                security: [{ BearerAuth: [] }],
+                parameters: [
+                    {
+                        name: "importId",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", format: "uuid" }
+                    }
+                ],
+                responses: {
+                    200: { description: "Merchant settlement evidence import" },
+                    404: { $ref: "#/components/responses/NotFound" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement-evidence/imports/{importId}/download": {
+            get: {
+                tags: ["Settlement"],
+                summary: "Download original settlement evidence",
+                security: [{ BearerAuth: [] }],
+                parameters: [
+                    {
+                        name: "importId",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", format: "uuid" }
+                    }
+                ],
+                responses: {
+                    200: {
+                        description: "Original CSV or XLSX evidence",
+                        content: {
+                            "text/csv": { schema: { type: "string", format: "binary" } },
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                                schema: { type: "string", format: "binary" }
+                            }
+                        }
+                    },
+                    404: { $ref: "#/components/responses/NotFound" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+
+        // ====================================================================
         // ADMIN — WEBHOOK EVENTS
         // ====================================================================
         "/api/admin/webhook-events": {

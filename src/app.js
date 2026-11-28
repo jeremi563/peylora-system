@@ -12,6 +12,7 @@ import notificationRoutes from "./routes/notification.routes.js";
 import paymentLinkRoutes from "./routes/payment-link.routes.js";
 import webhookRoutes from "./routes/webhook.routes.js";
 import accountingRoutes from "./routes/accounting.routes.js";
+import settlementEvidenceRoutes from "./routes/settlement-evidence.routes.js";
 import {
 	apiErrorHandler,
 	apiRateLimit,
@@ -72,6 +73,7 @@ app.use(paymentLinkRoutes);
 app.use(notificationRoutes);
 app.use(webhookRoutes);
 app.use(accountingRoutes);
+app.use(settlementEvidenceRoutes);
 app.use(mpesaRoutes);
 app.use(healthRoutes);
 app.use(docsRoutes);
