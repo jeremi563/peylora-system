@@ -75,3 +75,6 @@ CREATE TABLE settlement_evidence_rows (
 
 CREATE INDEX settlement_evidence_row_import_status_idx
     ON settlement_evidence_rows (import_id, validation_status);
+
+CREATE UNIQUE INDEX settlement_evidence_row_id_import_merchant_unique
+    ON settlement_evidence_rows (id, import_id, merchant_id);
