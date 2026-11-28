@@ -26,6 +26,27 @@ export class PaymentRequestFulfilledError extends Error {
     }
 }
 
+export class UnresolvedPaymentAttemptError extends Error {
+    constructor() {
+        super("The previous payment attempt must be resolved before another attempt can be created");
+        this.name = "UnresolvedPaymentAttemptError";
+    }
+}
+
+export class RecoveryDispositionConflictError extends Error {
+    constructor() {
+        super("A different recovery disposition already exists for this payment attempt");
+        this.name = "RecoveryDispositionConflictError";
+    }
+}
+
+export class PaymentAttemptNotRecoverableError extends Error {
+    constructor() {
+        super("Only a timed-out attempt without a CheckoutRequestID can be authorized for retry");
+        this.name = "PaymentAttemptNotRecoverableError";
+    }
+}
+
 const PAYMENT_FULFILLMENT_JOIN = `
     LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(pt.received_amount), 0) AS amount_received
@@ -106,6 +127,28 @@ async function getIdempotentOperation(client, merchantId, idempotencyKey) {
         [merchantId, idempotencyKey]
     );
     return result.rows[0] ?? null;
+}
+
+function hashRecoveryRequest({ operatorUserId, reason, supportingEvidence }) {
+    return createHash("sha256")
+        .update(JSON.stringify({ operatorUserId, reason, supportingEvidence }))
+        .digest("hex");
+}
+
+async function recordDispatchAudit(client, {
+    merchantId,
+    userId = null,
+    transactionId,
+    action,
+    details,
+    eventKey
+}) {
+    await client.query(
+        `INSERT INTO audit_logs (user_id, merchant_id, action, entity_type, entity_id, details, event_key)
+         VALUES ($1, $2, $3, 'TRANSACTION', $4, $5, $6)
+         ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+        [userId, merchantId, action, transactionId, JSON.stringify(details), eventKey]
+    );
 }
 
 function idempotentOperationMatches(operation, operationType, requestHash) {
@@ -346,9 +389,22 @@ export async function getRetryableMerchantPayment(merchantId, paymentId) {
     const result = await getDatabasePool().query(
         `SELECT p.id, p.amount, p.phone_number, p.description,
                 p.payment_link_id, p.invoice_id, p.status,
+                latest_attempt.status AS latest_attempt_status,
+                latest_attempt.dispatch_state AS latest_dispatch_state,
+                recovery.id AS retry_recovery_disposition_id,
                 ${PAYMENT_FULFILLMENT_SELECT}
          FROM payments p
          ${PAYMENT_FULFILLMENT_JOIN}
+         LEFT JOIN LATERAL (
+             SELECT t.id, t.status, t.dispatch_state
+             FROM transactions t
+             WHERE t.payment_id = p.id AND t.merchant_id = p.merchant_id
+             ORDER BY t.created_at DESC, t.id DESC
+             LIMIT 1
+         ) latest_attempt ON true
+         LEFT JOIN payment_attempt_recovery_dispositions recovery
+           ON recovery.attempt_transaction_id = latest_attempt.id
+          AND recovery.merchant_id = p.merchant_id
          WHERE p.id = $1 AND p.merchant_id = $2`,
         [paymentId, merchantId]
     );
@@ -424,14 +480,46 @@ export async function createPaymentAttempt({
             throw new PaymentRequestFulfilledError();
         }
 
+        const latestAttempt = await client.query(
+            `SELECT id, status
+             FROM transactions
+             WHERE payment_id = $1 AND merchant_id = $2
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+             FOR UPDATE`,
+            [paymentId, merchantId]
+        );
+        let recoveryDispositionId = null;
+        if (latestAttempt.rowCount) {
+            const previous = latestAttempt.rows[0];
+            if (previous.status === "TIMEOUT") {
+                const recovery = await client.query(
+                    `SELECT id
+                     FROM payment_attempt_recovery_dispositions
+                     WHERE attempt_transaction_id = $1 AND merchant_id = $2
+                       AND NOT EXISTS (
+                           SELECT 1 FROM transactions recovered_attempt
+                           WHERE recovered_attempt.recovery_disposition_id =
+                               payment_attempt_recovery_dispositions.id
+                       )
+                     FOR UPDATE`,
+                    [previous.id, merchantId]
+                );
+                if (!recovery.rowCount) throw new UnresolvedPaymentAttemptError();
+                recoveryDispositionId = recovery.rows[0].id;
+            } else if (!["SUCCESS", "FAILED", "CANCELLED"].includes(previous.status)) {
+                throw new UnresolvedPaymentAttemptError();
+            }
+        }
+
         const attempt = await client.query(
             `INSERT INTO transactions (
                 payment_id, merchant_id, account_reference, amount,
-                currency, phone_number, provider, status
+                currency, phone_number, provider, status, recovery_disposition_id
              )
-             VALUES ($1, $2, $3, $4, 'KES', $5, 'MPESA', 'PENDING')
+             VALUES ($1, $2, $3, $4, 'KES', $5, 'MPESA', 'PENDING', $6)
              RETURNING id, payment_id, amount, status, created_at`,
-            [paymentId, merchantId, accountReference, requestedAmount, phoneNumber]
+            [paymentId, merchantId, accountReference, requestedAmount, phoneNumber, recoveryDispositionId]
         );
 
         await client.query(
@@ -622,18 +710,191 @@ function compareStatusResponseWithTransaction(transaction, providerEvidence, res
     };
 }
 
+async function applyTerminalStatusQuery(client, transaction, response, verification, eventKey) {
+    const resultCode = verification.statusResultCode;
+    const responseCode = parseResultCode(response?.ResponseCode);
+    if (
+        transaction.status !== "PENDING" && transaction.status !== "TIMEOUT"
+        || !["NO_CALLBACK", "MATCH"].includes(verification.agreement)
+        || responseCode !== 0
+        || response?.CheckoutRequestID !== transaction.checkout_request_id
+        || ![0, 1032].includes(resultCode)
+    ) {
+        return false;
+    }
+
+    const metadata = extractCallbackMetadata(response.CallbackMetadata);
+    const receivedAmount = Number(metadata.Amount);
+    if (resultCode === 0 && (!Number.isFinite(receivedAmount) || receivedAmount <= 0)) {
+        return false;
+    }
+
+    const status = resultCode === 1032 ? "CANCELLED" : "SUCCESS";
+    const amountMatches = status === "SUCCESS"
+        ? receivedAmount === Number(transaction.amount)
+        : null;
+    await client.query("SAVEPOINT terminal_status_query");
+    try {
+        const update = await client.query(
+            `UPDATE transactions
+             SET status = $2, result_code = $3, result_description = $4,
+                 paid_amount = $5, amount_matches = $6,
+                 mpesa_receipt_number = $7, provider_transaction_date = $8,
+                 paid_from_phone_number = $9, reconciliation_response = $10,
+                 failure_reason = NULL, updated_at = NOW()
+             WHERE id = $1 AND status IN ('PENDING', 'TIMEOUT')
+             RETURNING payment_id`,
+            [
+                transaction.id,
+                status,
+                resultCode,
+                response.ResultDesc ?? null,
+                status === "SUCCESS" ? receivedAmount : null,
+                amountMatches,
+                status === "SUCCESS" && metadata.MpesaReceiptNumber != null
+                    ? String(metadata.MpesaReceiptNumber)
+                    : null,
+                metadata.TransactionDate == null ? null : String(metadata.TransactionDate),
+                metadata.PhoneNumber == null ? null : String(metadata.PhoneNumber),
+                JSON.stringify(response)
+            ]
+        );
+        if (!update.rowCount) {
+            await client.query("ROLLBACK TO SAVEPOINT terminal_status_query");
+            await client.query("RELEASE SAVEPOINT terminal_status_query");
+            return false;
+        }
+
+        const providerTransaction = await client.query(
+            `INSERT INTO provider_transactions (
+                merchant_id, attempt_transaction_id, provider, outcome,
+                provider_reference, received_amount, currency,
+                evidence_type, evidence_event_key, evidence_payload
+             )
+             VALUES ($1, $2, 'MPESA', $3, $4, $5, 'KES', 'STATUS_QUERY', $6, $7)
+             ON CONFLICT (attempt_transaction_id) DO NOTHING
+             RETURNING id`,
+            [
+                transaction.merchant_id,
+                transaction.id,
+                status,
+                status === "SUCCESS" && metadata.MpesaReceiptNumber != null
+                    ? String(metadata.MpesaReceiptNumber)
+                    : null,
+                status === "SUCCESS" ? receivedAmount : null,
+                eventKey,
+                JSON.stringify(response)
+            ]
+        );
+        if (!providerTransaction.rowCount) {
+            await client.query("ROLLBACK TO SAVEPOINT terminal_status_query");
+            await client.query("RELEASE SAVEPOINT terminal_status_query");
+            return false;
+        }
+
+        await client.query(
+            `UPDATE payments
+             SET status = $2, completed_at = NOW(), updated_at = NOW()
+             WHERE id = $1 AND status IN ('PENDING', 'TIMEOUT')`,
+            [update.rows[0].payment_id, status]
+        );
+        if (status === "SUCCESS") {
+            await processSuccessfulProviderTransaction(client, {
+                merchantId: transaction.merchant_id,
+                providerTransactionId: providerTransaction.rows[0].id,
+                receivedAmount,
+                paymentId: update.rows[0].payment_id
+            });
+            if (amountMatches === true) {
+                await client.query(
+                    `UPDATE payment_links
+                     SET status = 'INACTIVE', updated_at = NOW()
+                     WHERE invoice_id = (SELECT invoice_id FROM payments WHERE id = $1)
+                       AND status = 'ACTIVE'
+                       AND EXISTS (
+                           SELECT 1 FROM invoices
+                           WHERE id = payment_links.invoice_id
+                             AND merchant_id = $2 AND status = 'PAID'
+                       )`,
+                    [update.rows[0].payment_id, transaction.merchant_id]
+                );
+            }
+        }
+        await recordPaymentNotifications(client, {
+            eventKey: `mpesa-status:${transaction.checkout_request_id}`,
+            userId: transaction.owner_user_id,
+            email: transaction.owner_email,
+            businessName: transaction.business_name,
+            status,
+            reference: transaction.reference,
+            requestedAmount: Number(transaction.amount),
+            paidAmount: status === "SUCCESS" ? receivedAmount : null,
+            amountMatches,
+            receiptNumber: metadata.MpesaReceiptNumber
+        });
+        await client.query(
+            `INSERT INTO audit_logs (
+                user_id, merchant_id, action, entity_type, entity_id, details, event_key
+             )
+             VALUES ($1, $2, $3, 'TRANSACTION', $4, $5, $6)
+             ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+            [
+                transaction.owner_user_id,
+                transaction.merchant_id,
+                `PAYMENT_${status}`,
+                transaction.id,
+                JSON.stringify({
+                    paymentReference: transaction.reference,
+                    resultCode,
+                    paidAmount: status === "SUCCESS" ? receivedAmount : null,
+                    amountMatches,
+                    receiptNumber: metadata.MpesaReceiptNumber ?? null,
+                    evidenceType: "STATUS_QUERY"
+                }),
+                `mpesa-status:${transaction.checkout_request_id}`
+            ]
+        );
+        await client.query("RELEASE SAVEPOINT terminal_status_query");
+        return true;
+    } catch (error) {
+        await client.query("ROLLBACK TO SAVEPOINT terminal_status_query");
+        await client.query("RELEASE SAVEPOINT terminal_status_query");
+        if (error.code === "23505" && error.constraint === "provider_transactions_reference_unique") {
+            const conflict = {
+                agreement: "MISMATCH",
+                conflictFields: ["receiptAlreadyAssociated"]
+            };
+            await client.query(
+                `UPDATE reconciliation_events
+                 SET agreement = 'MISMATCH',
+                     response_payload = jsonb_set(response_payload, '{verification}', $2::jsonb)
+                 WHERE event_key = $1`,
+                [eventKey, JSON.stringify(conflict)]
+            );
+            return false;
+        }
+        throw error;
+    }
+}
+
 export async function recordReconciliationResponse(transactionId, merchantId, response) {
     const pool = getDatabasePool();
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
         const transaction = await client.query(
-            `SELECT id, result_code, checkout_request_id, merchant_request_id,
-                    callback_metadata, paid_amount, mpesa_receipt_number,
-                    paid_from_phone_number, provider_transaction_date
-             FROM transactions
-             WHERE id = $1 AND merchant_id = $2
-             FOR UPDATE`,
+            `SELECT t.id, t.status, t.payment_id, t.merchant_id, t.amount,
+                    t.result_code, t.checkout_request_id, t.merchant_request_id,
+                    t.callback_metadata, t.paid_amount, t.mpesa_receipt_number,
+                    t.paid_from_phone_number, t.provider_transaction_date,
+                    p.reference, m.user_id AS owner_user_id, m.business_name,
+                    u.email AS owner_email
+             FROM transactions t
+             JOIN payments p ON p.id = t.payment_id
+             LEFT JOIN merchants m ON m.id = t.merchant_id
+             LEFT JOIN users u ON u.id = m.user_id
+             WHERE t.id = $1 AND t.merchant_id = $2
+             FOR UPDATE OF t`,
             [transactionId, merchantId]
         );
         if (!transaction.rowCount) {
@@ -699,6 +960,15 @@ export async function recordReconciliationResponse(transactionId, merchantId, re
                 eventKey
             ]
         );
+        if (!providerTransaction.rowCount) {
+            await applyTerminalStatusQuery(
+                client,
+                transaction.rows[0],
+                response,
+                verification,
+                eventKey
+            );
+        }
         await client.query("COMMIT");
         return true;
     } catch (error) {
@@ -803,6 +1073,7 @@ export async function getMerchantPayment(merchantId, paymentId) {
                     jsonb_agg(jsonb_build_object(
                         'id', t.id,
                         'status', t.status,
+                        'dispatchState', t.dispatch_state,
                         'amount', t.amount,
                         'paidAmount', t.paid_amount,
                         'merchantRequestId', t.merchant_request_id,
@@ -834,6 +1105,7 @@ export async function getMerchantTransaction(merchantId, transactionId) {
                 t.paid_from_phone_number, t.status, t.merchant_request_id,
                 t.checkout_request_id, t.mpesa_receipt_number,
                 t.provider_transaction_date, t.result_code, t.result_description,
+                t.dispatch_state,
                 t.failure_reason, t.reconciliation_response,
                 t.reconciliation_requested_at, t.created_at, t.updated_at
          FROM transactions t
@@ -853,6 +1125,37 @@ export async function getPendingMerchantTransaction(merchantId, transactionId) {
     return result.rows[0] ?? null;
 }
 
+export async function markStkDispatching(transactionId, merchantId) {
+    const client = await getDatabasePool().connect();
+    try {
+        await client.query("BEGIN");
+        const result = await client.query(
+            `UPDATE transactions
+             SET dispatch_state = 'DISPATCHING', updated_at = NOW()
+             WHERE id = $1 AND merchant_id = $2
+               AND status = 'PENDING' AND dispatch_state = 'PREPARED'
+             RETURNING id`,
+            [transactionId, merchantId]
+        );
+        if (result.rowCount) {
+            await recordDispatchAudit(client, {
+                merchantId,
+                transactionId,
+                action: "PAYMENT_STK_DISPATCHING",
+                details: { dispatchState: "DISPATCHING" },
+                eventKey: `stk-dispatching:${transactionId}`
+            });
+        }
+        await client.query("COMMIT");
+        return result.rowCount > 0;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
 export async function saveStkResponse(transactionId, response) {
     const pool = getDatabasePool();
     const client = await pool.connect();
@@ -869,15 +1172,29 @@ export async function saveStkResponse(transactionId, response) {
                  stk_response_code = $4,
                  stk_response_description = $5,
                  stk_response = $6,
+                 dispatch_state = 'ACKNOWLEDGED',
                  updated_at = NOW()
              WHERE id = $1 AND status = 'PENDING'
-             RETURNING payment_id, checkout_request_id`,
+               AND dispatch_state = 'DISPATCHING'
+             RETURNING payment_id, merchant_id, checkout_request_id`,
             [transactionId, response.MerchantRequestID ?? null,
                 response.CheckoutRequestID ?? null, response.ResponseCode ?? null,
                 response.ResponseDescription ?? null, JSON.stringify(response)]
         );
 
         if (result.rowCount) {
+            await recordDispatchAudit(client, {
+                merchantId: result.rows[0].merchant_id,
+                transactionId,
+                action: "PAYMENT_STK_ACKNOWLEDGED",
+                details: {
+                    dispatchState: "ACKNOWLEDGED",
+                    responseCode: response.ResponseCode ?? null,
+                    merchantRequestId: response.MerchantRequestID ?? null,
+                    checkoutRequestId: response.CheckoutRequestID ?? null
+                },
+                eventKey: `stk-acknowledged:${transactionId}`
+            });
             await client.query(
                 `UPDATE payments SET status = 'PENDING', updated_at = NOW() WHERE id = $1`,
                 [result.rows[0].payment_id]
@@ -898,7 +1215,12 @@ export async function saveStkResponse(transactionId, response) {
     }
 }
 
-export async function markInitiationFailed(transactionId, reason, darajaResponse) {
+export async function markInitiationFailed(
+    transactionId,
+    reason,
+    darajaResponse,
+    dispatchState = "REJECTED"
+) {
     const pool = getDatabasePool();
     const client = await pool.connect();
 
@@ -906,13 +1228,35 @@ export async function markInitiationFailed(transactionId, reason, darajaResponse
         await client.query("BEGIN");
         const result = await client.query(
             `UPDATE transactions
-             SET status = 'FAILED', failure_reason = $2, stk_response = $3, updated_at = NOW()
+             SET status = 'FAILED', dispatch_state = $4,
+                 failure_reason = $2, stk_response = $3, updated_at = NOW()
              WHERE id = $1 AND status = 'PENDING'
-             RETURNING payment_id`,
-            [transactionId, reason, darajaResponse ? JSON.stringify(darajaResponse) : null]
+               AND dispatch_state IN ('PREPARED', 'DISPATCHING')
+             RETURNING payment_id, merchant_id`,
+            [
+                transactionId,
+                reason,
+                dispatchState === "REJECTED" && darajaResponse
+                    ? JSON.stringify(darajaResponse)
+                    : null,
+                dispatchState
+            ]
         );
 
         if (result.rowCount) {
+            await recordDispatchAudit(client, {
+                merchantId: result.rows[0].merchant_id,
+                transactionId,
+                action: dispatchState === "REJECTED"
+                    ? "PAYMENT_STK_REJECTED"
+                    : "PAYMENT_STK_PRE_DISPATCH_FAILED",
+                details: {
+                    dispatchState,
+                    reason,
+                    ...(darajaResponse ? { providerResponse: darajaResponse } : {})
+                },
+                eventKey: `stk-${dispatchState.toLowerCase()}:${transactionId}`
+            });
             await client.query(
                 "UPDATE payments SET status = 'FAILED', updated_at = NOW() WHERE id = $1 AND status = 'PENDING'",
                 [result.rows[0].payment_id]
@@ -927,6 +1271,40 @@ export async function markInitiationFailed(transactionId, reason, darajaResponse
     }
 }
 
+export async function markDispatchUncertain(transactionId, error) {
+    const client = await getDatabasePool().connect();
+    try {
+        await client.query("BEGIN");
+        const result = await client.query(
+            `UPDATE transactions
+             SET dispatch_state = 'UNCERTAIN', updated_at = NOW()
+             WHERE id = $1 AND status = 'PENDING' AND dispatch_state = 'DISPATCHING'
+             RETURNING merchant_id`,
+            [transactionId]
+        );
+        if (result.rowCount) {
+            await recordDispatchAudit(client, {
+                merchantId: result.rows[0].merchant_id,
+                transactionId,
+                action: "PAYMENT_STK_UNCERTAIN",
+                details: {
+                    dispatchState: "UNCERTAIN",
+                    errorMessage: String(error?.message ?? "STK dispatch response was not received").slice(0, 1000),
+                    ...(error?.code ? { errorCode: String(error.code).slice(0, 100) } : {})
+                },
+                eventKey: `stk-uncertain:${transactionId}`
+            });
+        }
+        await client.query("COMMIT");
+        return result.rowCount > 0;
+    } catch (markError) {
+        await client.query("ROLLBACK");
+        throw markError;
+    } finally {
+        client.release();
+    }
+}
+
 export async function markExpiredPendingAttempts({ timeoutSeconds, limit = 100 }) {
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1) {
         throw new Error("timeoutSeconds must be a positive integer");
@@ -936,7 +1314,7 @@ export async function markExpiredPendingAttempts({ timeoutSeconds, limit = 100 }
     try {
         await client.query("BEGIN");
         const expired = await client.query(
-            `SELECT t.id, t.payment_id
+            `SELECT t.id, t.payment_id, t.merchant_id, t.dispatch_state
              FROM transactions t
              WHERE t.status = 'PENDING'
                AND t.created_at <= NOW() - ($1 * INTERVAL '1 second')
@@ -947,23 +1325,152 @@ export async function markExpiredPendingAttempts({ timeoutSeconds, limit = 100 }
         );
 
         for (const attempt of expired.rows) {
+            const wasNotDispatched = attempt.dispatch_state === "PREPARED";
+            const status = wasNotDispatched ? "FAILED" : "TIMEOUT";
+            const dispatchState = wasNotDispatched
+                ? "PRE_DISPATCH_FAILED"
+                : attempt.dispatch_state === "DISPATCHING"
+                    ? "UNCERTAIN"
+                    : attempt.dispatch_state;
             await client.query(
                 `UPDATE transactions
-                 SET status = 'TIMEOUT',
-                     failure_reason = 'Awaited outcome exceeded the configured timeout',
+                 SET status = $2, dispatch_state = $3,
+                     failure_reason = $4,
                      updated_at = NOW()
                  WHERE id = $1 AND status = 'PENDING'`,
-                [attempt.id]
+                [
+                    attempt.id,
+                    status,
+                    dispatchState,
+                    wasNotDispatched
+                        ? "Dispatch did not begin before the configured timeout"
+                        : "Awaited outcome exceeded the configured timeout"
+                ]
             );
             await client.query(
                 `UPDATE payments
-                 SET status = 'TIMEOUT', completed_at = NOW(), updated_at = NOW()
+                 SET status = $2, completed_at = NOW(), updated_at = NOW()
                  WHERE id = $1 AND status = 'PENDING'`,
-                [attempt.payment_id]
+                [attempt.payment_id, status]
             );
+            await recordDispatchAudit(client, {
+                merchantId: attempt.merchant_id,
+                transactionId: attempt.id,
+                action: wasNotDispatched
+                    ? "PAYMENT_STK_PRE_DISPATCH_FAILED"
+                    : "PAYMENT_ATTEMPT_TIMEOUT",
+                details: {
+                    dispatchState,
+                    attemptStatus: status
+                },
+                eventKey: `attempt-timeout:${attempt.id}`
+            });
         }
         await client.query("COMMIT");
         return expired.rows.length;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+export async function createPaymentAttemptRecoveryDisposition({
+    transactionId,
+    operatorUserId,
+    reason,
+    supportingEvidence
+}) {
+    const client = await getDatabasePool().connect();
+    try {
+        await client.query("BEGIN");
+        const attempt = await client.query(
+            `SELECT id, merchant_id, status, dispatch_state, checkout_request_id
+             FROM transactions
+             WHERE id = $1
+             FOR UPDATE`,
+            [transactionId]
+        );
+        if (!attempt.rowCount) {
+            await client.query("ROLLBACK");
+            return null;
+        }
+
+        const current = attempt.rows[0];
+        const requestHash = hashRecoveryRequest({
+            operatorUserId,
+            reason,
+            supportingEvidence
+        });
+        const existing = await client.query(
+            `SELECT id, attempt_transaction_id, merchant_id, operator_user_id,
+                    disposition, reason, supporting_evidence, created_at, request_hash
+             FROM payment_attempt_recovery_dispositions
+             WHERE attempt_transaction_id = $1
+             FOR UPDATE`,
+            [transactionId]
+        );
+        if (existing.rowCount) {
+            if (existing.rows[0].request_hash.trim() !== requestHash) {
+                throw new RecoveryDispositionConflictError();
+            }
+            await client.query("COMMIT");
+            const { request_hash, ...disposition } = existing.rows[0];
+            return disposition;
+        }
+
+        if (
+            current.status !== "TIMEOUT"
+            || current.checkout_request_id
+            || !["UNCERTAIN", "ACKNOWLEDGED", "LEGACY_UNKNOWN"].includes(current.dispatch_state)
+        ) {
+            throw new PaymentAttemptNotRecoverableError();
+        }
+
+        const providerEvidence = await client.query(
+            `SELECT 1
+             FROM provider_transactions
+             WHERE attempt_transaction_id = $1 AND merchant_id = $2
+             LIMIT 1`,
+            [transactionId, current.merchant_id]
+        );
+        if (providerEvidence.rowCount) {
+            throw new PaymentAttemptNotRecoverableError();
+        }
+
+        const inserted = await client.query(
+            `INSERT INTO payment_attempt_recovery_dispositions (
+                attempt_transaction_id, merchant_id, operator_user_id,
+                disposition, reason, supporting_evidence, request_hash
+             )
+             VALUES ($1, $2, $3, 'RETRY_AUTHORIZED', $4, $5, $6)
+             RETURNING id, attempt_transaction_id, merchant_id, operator_user_id,
+                       disposition, reason, supporting_evidence, created_at`,
+            [
+                transactionId,
+                current.merchant_id,
+                operatorUserId,
+                reason,
+                supportingEvidence,
+                requestHash
+            ]
+        );
+        const disposition = inserted.rows[0];
+        await recordDispatchAudit(client, {
+            merchantId: current.merchant_id,
+            userId: operatorUserId,
+            transactionId,
+            action: "PAYMENT_ATTEMPT_RETRY_AUTHORIZED",
+            details: {
+                recoveryDispositionId: disposition.id,
+                reason,
+                supportingEvidence
+            },
+            eventKey: `payment-attempt-recovery:${disposition.id}`
+        });
+        await client.query("COMMIT");
+        return disposition;
     } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -1386,7 +1893,7 @@ export async function applyMpesaCallback(callback, metadata, eventContext = {}) 
             [transaction.id, transaction.merchant_id]
         );
         const conflictFields = [...verification.conflictFields];
-        if (providerTransaction.rowCount) {
+        if (providerTransaction.rowCount && providerTransaction.rows[0].evidence_payload?.callback) {
             conflictFields.push(...callbackEvidenceDifferences(
                 providerTransaction.rows[0].evidence_payload,
                 callback,

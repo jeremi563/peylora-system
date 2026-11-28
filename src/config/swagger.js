@@ -2124,6 +2124,45 @@ The date range must not exceed 366 calendar days.
                 }
             }
         },
+        "/api/admin/payment-attempts/{transactionId}/recovery-dispositions": {
+            post: {
+                tags: ["Admin"],
+                summary: "Authorize retry for an operator-reviewed uncertain attempt",
+                description: "Creates an immutable, audited retry authorization for a timed-out attempt without a CheckoutRequestID. Requires ADMIN role.",
+                operationId: "authorizePaymentAttemptRetry",
+                security: [{ BearerAuth: [] }],
+                parameters: [
+                    {
+                        name: "transactionId",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", format: "uuid" }
+                    }
+                ],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["reason", "supportingEvidence"],
+                                properties: {
+                                    reason: { type: "string", minLength: 8, maxLength: 1000 },
+                                    supportingEvidence: { type: "string", minLength: 1, maxLength: 4000 }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    201: { description: "Retry disposition created or returned" },
+                    401: { $ref: "#/components/responses/Unauthorized" },
+                    403: { $ref: "#/components/responses/Forbidden" },
+                    409: { description: "Attempt is queryable, already resolved, or the disposition conflicts" },
+                    404: { $ref: "#/components/responses/NotFound" }
+                }
+            }
+        },
 
         // ====================================================================
         // ADMIN — AUDIT LOGS

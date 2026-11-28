@@ -115,6 +115,7 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
             [concurrentCheckoutId]
         )).rows[0].count, 2);
 
+        await transactionService.markStkDispatching(attemptId, merchantId);
         await transactionService.saveStkResponse(attemptId, {
             ResponseCode: "0",
             MerchantRequestID: callback.MerchantRequestID,
@@ -229,6 +230,7 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
             {},
             incompleteRawPayload
         );
+        await transactionService.markStkDispatching(incompleteAttemptId, merchantId);
         await transactionService.saveStkResponse(incompleteAttemptId, {
             ResponseCode: "0",
             MerchantRequestID: incompleteCallback.MerchantRequestID,
@@ -254,6 +256,143 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
         const incompleteEvidence = await transactionService.listReconciliationEvents(merchantId, incompleteAttemptId);
         assert.equal(incompleteEvidence[0].agreement, "UNVERIFIED");
         assert.ok(incompleteEvidence[0].response_payload.verification.unverifiedFields.includes("amount"));
+
+        const statusOnlyPaymentId = (await pool.query(
+            `INSERT INTO payments (merchant_id, reference, amount, phone_number, status)
+             VALUES ($1, $2, 100, '254700001234', 'TIMEOUT')
+             RETURNING id`,
+            [merchantId, `PAY-STATUS-ONLY-${suffix}`]
+        )).rows[0].id;
+        const statusOnlyCheckoutId = `CHECKOUT-STATUS-ONLY-${suffix}`;
+        const statusOnlyAttemptId = (await pool.query(
+            `INSERT INTO transactions (
+                payment_id, merchant_id, account_reference, amount,
+                currency, phone_number, provider, status, dispatch_state,
+                checkout_request_id, merchant_request_id
+             )
+             VALUES ($1, $2, $3, 100, 'KES', '254700001234', 'MPESA',
+                     'TIMEOUT', 'ACKNOWLEDGED', $4, $5)
+             RETURNING id`,
+            [
+                statusOnlyPaymentId,
+                merchantId,
+                `ACC-STATUS-ONLY-${suffix}`,
+                statusOnlyCheckoutId,
+                `MERCHANT-STATUS-ONLY-${suffix}`
+            ]
+        )).rows[0].id;
+        const terminalStatusResponse = {
+            ResponseCode: "0",
+            CheckoutRequestID: statusOnlyCheckoutId,
+            MerchantRequestID: `MERCHANT-STATUS-ONLY-${suffix}`,
+            ResultCode: 0,
+            ResultDesc: "The service request has been processed successfully",
+            CallbackMetadata: {
+                Item: [
+                    { Name: "Amount", Value: 100 },
+                    { Name: "MpesaReceiptNumber", Value: `STATUS-RECEIPT-${suffix}` }
+                ]
+            }
+        };
+        await pool.query(
+            `INSERT INTO reconciliation_events (
+                merchant_id, transaction_id, evidence_type, result_code,
+                callback_result_code, agreement, response_payload, event_key
+             )
+             VALUES ($1, $2, 'CALLBACK_VERIFICATION', 0, 0, 'MATCH', $3, $4)
+             ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+            [
+                merchantId,
+                statusOnlyAttemptId,
+                JSON.stringify({
+                    callback: {
+                        CheckoutRequestID: statusOnlyCheckoutId,
+                        MerchantRequestID: `MERCHANT-STATUS-ONLY-${suffix}`,
+                        ResultCode: 0
+                    },
+                    metadata: {
+                        Amount: 100,
+                        MpesaReceiptNumber: `STATUS-RECEIPT-${suffix}`
+                    }
+                }),
+                `callback-verification-status-only:${statusOnlyAttemptId}`
+            ]
+        );
+        assert.equal(await transactionService.recordReconciliationResponse(
+            statusOnlyAttemptId,
+            merchantId,
+            terminalStatusResponse
+        ), true);
+        assert.equal(await transactionService.recordReconciliationResponse(
+            statusOnlyAttemptId,
+            merchantId,
+            terminalStatusResponse
+        ), true);
+        const statusOnlyState = await pool.query(
+            `SELECT t.status, t.callback_received_at, p.status AS payment_status,
+                    COUNT(pt.id)::integer AS provider_transaction_count,
+                    MAX(pt.evidence_type) AS evidence_type,
+                    MAX(pt.received_amount)::numeric AS received_amount
+             FROM transactions t
+             JOIN payments p ON p.id = t.payment_id
+             LEFT JOIN provider_transactions pt ON pt.attempt_transaction_id = t.id
+             WHERE t.id = $1
+             GROUP BY t.id, p.status`,
+            [statusOnlyAttemptId]
+        );
+        assert.equal(statusOnlyState.rows[0].status, "SUCCESS");
+        assert.equal(statusOnlyState.rows[0].payment_status, "SUCCESS");
+        assert.equal(statusOnlyState.rows[0].callback_received_at, null);
+        assert.equal(statusOnlyState.rows[0].provider_transaction_count, 1);
+        assert.equal(statusOnlyState.rows[0].evidence_type, "STATUS_QUERY");
+        assert.equal(Number(statusOnlyState.rows[0].received_amount), 100);
+
+        const missingAmountPaymentId = (await pool.query(
+            `INSERT INTO payments (merchant_id, reference, amount, phone_number, status)
+             VALUES ($1, $2, 100, '254700001234', 'TIMEOUT')
+             RETURNING id`,
+            [merchantId, `PAY-STATUS-MISSING-AMOUNT-${suffix}`]
+        )).rows[0].id;
+        const missingAmountCheckoutId = `CHECKOUT-STATUS-MISSING-AMOUNT-${suffix}`;
+        const missingAmountAttemptId = (await pool.query(
+            `INSERT INTO transactions (
+                payment_id, merchant_id, account_reference, amount,
+                currency, phone_number, provider, status, dispatch_state,
+                checkout_request_id
+             )
+             VALUES ($1, $2, $3, 100, 'KES', '254700001234', 'MPESA',
+                     'TIMEOUT', 'UNCERTAIN', $4)
+             RETURNING id`,
+            [
+                missingAmountPaymentId,
+                merchantId,
+                `ACC-STATUS-MISSING-AMOUNT-${suffix}`,
+                missingAmountCheckoutId
+            ]
+        )).rows[0].id;
+        assert.equal(await transactionService.recordReconciliationResponse(
+            missingAmountAttemptId,
+            merchantId,
+            {
+                ResponseCode: "0",
+                CheckoutRequestID: missingAmountCheckoutId,
+                ResultCode: 0,
+                ResultDesc: "The service request has been processed successfully"
+            }
+        ), true);
+        const missingAmountState = await pool.query(
+            `SELECT t.status, p.status AS payment_status,
+                    COUNT(pt.id)::integer AS provider_transaction_count
+             FROM transactions t
+             JOIN payments p ON p.id = t.payment_id
+             LEFT JOIN provider_transactions pt ON pt.attempt_transaction_id = t.id
+             WHERE t.id = $1
+             GROUP BY t.id, p.status`,
+            [missingAmountAttemptId]
+        );
+        assert.equal(missingAmountState.rows[0].status, "TIMEOUT");
+        assert.equal(missingAmountState.rows[0].payment_status, "TIMEOUT");
+        assert.equal(missingAmountState.rows[0].provider_transaction_count, 0);
 
         const secondMerchant = await pool.query(
             `INSERT INTO users (name, email, password_hash)
@@ -288,7 +427,14 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
                 `mpesa:CHECKOUT-CONCURRENT-${suffix}%`
             ]
         ).catch(() => {});
+        await pool.query(
+            "DELETE FROM notifications WHERE user_id = (SELECT user_id FROM merchants WHERE id = $1)",
+            [merchantId]
+        ).catch(() => {});
+        await pool.query("DELETE FROM unassigned_received_funds WHERE merchant_id = $1", [merchantId]).catch(() => {});
+        await pool.query("DELETE FROM audit_logs WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM reconciliation_events WHERE merchant_id = $1", [merchantId]).catch(() => {});
+        await pool.query("DELETE FROM provider_transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM payments WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM merchants WHERE id = $1", [merchantId]).catch(() => {});

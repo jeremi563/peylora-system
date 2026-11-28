@@ -17,10 +17,13 @@ import {
     getMerchantTransaction,
     getRetryableMerchantPayment,
     listMerchantPayments,
+    markDispatchUncertain,
     markInitiationFailed,
+    markStkDispatching,
     markReconciliationRequested,
     IdempotencyConflictError,
     PaymentRequestFulfilledError,
+    UnresolvedPaymentAttemptError,
     listReconciliationEvents,
     recordReconciliationResponse,
     saveStkResponse
@@ -176,6 +179,13 @@ async function initiatePayment(req, res, {
             transactionDesc: description || "Payment"
         });
 
+        const dispatchStarted = await markStkDispatching(
+            transaction._id,
+            merchantId
+        );
+        if (!dispatchStarted) {
+            throw new UnresolvedPaymentAttemptError();
+        }
         stkRequestDispatched = true;
         const result = await sendStkPush(payload, accessToken);
         const accepted = String(result.ResponseCode) === "0";
@@ -212,16 +222,26 @@ async function initiatePayment(req, res, {
         if (error instanceof PaymentRequestFulfilledError) {
             return res.status(409).json({ message: error.message });
         }
+        if (error instanceof UnresolvedPaymentAttemptError) {
+            return res.status(409).json({ message: error.message });
+        }
         const details = error.response?.data;
-        if (transaction && (!stkRequestDispatched || error.response)) {
+        if (transaction && !stkRequestDispatched) {
             try {
                 await markInitiationFailed(
                     transaction._id,
-                    details?.errorMessage ?? error.message,
-                    details
+                    error.message,
+                    null,
+                    "PRE_DISPATCH_FAILED"
                 );
             } catch (persistenceError) {
                 console.error("Could not update failed STK transaction:", persistenceError.message);
+            }
+        } else if (transaction) {
+            try {
+                await markDispatchUncertain(transaction._id, error);
+            } catch (persistenceError) {
+                console.error("Could not record uncertain STK dispatch:", persistenceError.message);
             }
         }
 
@@ -311,7 +331,7 @@ export async function retryPayment(req, res) {
             message: "A fulfilled payment request cannot accept another collection"
         });
     }
-    if (payment.status === "TIMEOUT") {
+    if (payment.status === "TIMEOUT" && !payment.retry_recovery_disposition_id) {
         return res.status(409).json({
             success: false,
             message: "A timed-out payment attempt must be resolved before retry"
