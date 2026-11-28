@@ -19,3 +19,8 @@ export const paymentAttemptRecoverySchema = z.object({
     reason: z.string().trim().min(8).max(1000),
     supportingEvidence: z.string().trim().min(1).max(4000)
 });
+
+export const webhookRetrySchema = z.object({
+    reason: z.string().trim().min(8).max(1000),
+    supportingEvidence: z.string().trim().min(1).max(4000)
+});

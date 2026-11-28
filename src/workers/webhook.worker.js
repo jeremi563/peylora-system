@@ -74,6 +74,13 @@ async function runWorker() {
                     await processEvent(event);
                 } catch (error) {
                     await retryWebhookEvent(event.id, event.attempts, event.max_attempts, error.message);
+                    if (event.attempts >= event.max_attempts) {
+                        console.error("Webhook work exhausted retry budget:", {
+                            eventId: event.id,
+                            attempts: event.attempts,
+                            alert: "REVIEW_REQUIRED"
+                        });
+                    }
                     console.error("Webhook event processing failed:", {
                         eventId: event.id,
                         attempts: event.attempts,

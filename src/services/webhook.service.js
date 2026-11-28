@@ -193,17 +193,112 @@ export async function listWebhookEvents({ status, page, limit }) {
     return { items: events.rows, total: count.rows[0].total };
 }
 
-export async function retryFailedWebhookEvent(eventId) {
-    const result = await getDatabasePool().query(
-        `UPDATE webhook_events
-         SET status = 'RECEIVED', attempts = 0, max_attempts = GREATEST(max_attempts, 8),
-             next_attempt_at = NOW(), claimed_at = NULL, processed_at = NULL,
-             last_error = NULL, updated_at = NOW()
-         WHERE id = $1 AND status = 'FAILED'
-         RETURNING id, status`,
-        [eventId]
-    );
-    return result.rows[0] ?? null;
+export async function retryFailedWebhookEvent(eventId, operatorUserId, reason, supportingEvidence) {
+    const pool = getDatabasePool();
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const event = await client.query(
+            `SELECT id, status, event_key
+             FROM webhook_events
+             WHERE id = $1
+             FOR UPDATE`,
+            [eventId]
+        );
+        if (!event.rowCount) {
+            await client.query("ROLLBACK");
+            return null;
+        }
+
+        const eventKey = `operator-webhook-retry:${eventId}`;
+        const existingAudit = await client.query(
+            `SELECT id
+             FROM audit_logs
+             WHERE event_key = $1
+             FOR UPDATE`,
+            [eventKey]
+        );
+        if (event.rows[0].status === "FAILED") {
+            await client.query(
+                `UPDATE webhook_events
+                 SET status = 'RECEIVED', attempts = 0, max_attempts = GREATEST(max_attempts, 8),
+                     next_attempt_at = NOW(), claimed_at = NULL, processed_at = NULL,
+                     last_error = NULL, updated_at = NOW()
+                 WHERE id = $1 AND status = 'FAILED'
+                 RETURNING id, status`,
+                [eventId]
+            );
+        }
+        if (!existingAudit.rowCount) {
+            await client.query(
+                `INSERT INTO audit_logs (
+                    user_id, merchant_id, action, entity_type, entity_id, details, event_key
+                 )
+                 VALUES ($1, NULL, 'WEBHOOK_OPERATOR_RETRY', 'WEBHOOK_EVENT', $2, $3, $4)`,
+                [
+                    operatorUserId,
+                    eventId,
+                    JSON.stringify({
+                        reason,
+                        supportingEvidence,
+                        sourceEventKey: event.rows[0].event_key
+                    }),
+                    eventKey
+                ]
+            );
+        }
+        await client.query("COMMIT");
+        return { id: event.rows[0].id, status: "RECEIVED" };
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+export async function getOperationalSnapshot() {
+    const pool = getDatabasePool();
+    const [webhooks, notifications, transactions, reconciliation] = await Promise.all([
+        pool.query(`
+            SELECT status,
+                   COUNT(*)::integer AS count,
+                   COALESCE(EXTRACT(EPOCH FROM MAX(NOW() - created_at))::integer, 0) AS oldest_age_seconds,
+                   COALESCE(EXTRACT(EPOCH FROM MAX(NOW() - COALESCE(claimed_at, created_at))))::integer AS leased_age_seconds
+            FROM webhook_events
+            GROUP BY status
+        `),
+        pool.query(`
+            SELECT delivery_status AS status,
+                   COUNT(*)::integer AS count,
+                   COALESCE(EXTRACT(EPOCH FROM MAX(NOW() - created_at))::integer, 0) AS oldest_age_seconds
+            FROM notifications
+            WHERE channel = 'EMAIL'
+            GROUP BY delivery_status
+        `),
+        pool.query(`
+            SELECT dispatch_state,
+                   COUNT(*)::integer AS count,
+                   COALESCE(EXTRACT(EPOCH FROM MAX(NOW() - created_at))::integer, 0) AS oldest_age_seconds
+            FROM transactions
+            WHERE status IN ('PENDING', 'TIMEOUT')
+            GROUP BY dispatch_state
+        `),
+        pool.query(`
+            SELECT agreement,
+                   COUNT(*)::integer AS count,
+                   COALESCE(EXTRACT(EPOCH FROM MAX(NOW() - created_at))::integer, 0) AS oldest_age_seconds
+            FROM reconciliation_events
+            WHERE agreement = 'MISMATCH'
+            GROUP BY agreement
+        `)
+    ]);
+    return {
+        webhooks: webhooks.rows,
+        notifications: notifications.rows,
+        unresolvedPayments: transactions.rows,
+        reconciliationConflicts: reconciliation.rows
+    };
 }
 
 export async function listAuditLogs({ action, page, limit }) {
