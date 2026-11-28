@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS settlement_lines_provider_reference_unique;
