@@ -3,6 +3,11 @@ import {
     listWebhookEvents,
     retryFailedWebhookEvent
 } from "../services/webhook.service.js";
+import {
+    createPaymentAttemptRecoveryDisposition,
+    PaymentAttemptNotRecoverableError,
+    RecoveryDispositionConflictError
+} from "../services/transaction.service.js";
 
 function pageResponse(result, query, key) {
     return {
@@ -47,5 +52,35 @@ export async function getAuditLogs(req, res) {
     } catch (error) {
         console.error("Could not list audit logs:", error.message);
         return res.status(500).json({ success: false, message: "Could not retrieve audit logs" });
+    }
+}
+
+export async function authorizePaymentAttemptRetry(req, res) {
+    try {
+        const disposition = await createPaymentAttemptRecoveryDisposition({
+            transactionId: req.params.transactionId,
+            operatorUserId: req.auth.userId,
+            reason: req.validatedBody.reason,
+            supportingEvidence: req.validatedBody.supportingEvidence
+        });
+        if (!disposition) {
+            return res.status(404).json({
+                success: false,
+                message: "Payment attempt not found"
+            });
+        }
+        return res.status(201).json({ success: true, recoveryDisposition: disposition });
+    } catch (error) {
+        if (error instanceof RecoveryDispositionConflictError) {
+            return res.status(409).json({ success: false, message: error.message });
+        }
+        if (error instanceof PaymentAttemptNotRecoverableError) {
+            return res.status(409).json({ success: false, message: error.message });
+        }
+        console.error("Could not authorize payment attempt retry:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Could not authorize payment attempt retry"
+        });
     }
 }

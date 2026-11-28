@@ -13,3 +13,9 @@ export const auditLogListSchema = z.object({
 });
 
 export const webhookEventIdSchema = z.string().uuid();
+export const paymentAttemptIdSchema = z.string().uuid();
+
+export const paymentAttemptRecoverySchema = z.object({
+    reason: z.string().trim().min(8).max(1000),
+    supportingEvidence: z.string().trim().min(1).max(4000)
+});

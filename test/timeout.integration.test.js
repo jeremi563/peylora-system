@@ -74,9 +74,10 @@ test("pending attempts become TIMEOUT once and late callbacks remain eligible", 
         attemptId = (await pool.query(
             `INSERT INTO transactions (
                 payment_id, merchant_id, account_reference, amount,
-                currency, phone_number, provider, status, created_at
+                currency, phone_number, provider, status, dispatch_state, created_at
              )
-             VALUES ($1, $2, $3, 100, 'KES', $4, 'MPESA', 'PENDING', NOW() - INTERVAL '20 minutes')
+             VALUES ($1, $2, $3, 100, 'KES', $4, 'MPESA', 'PENDING', 'ACKNOWLEDGED',
+                     NOW() - INTERVAL '20 minutes')
              RETURNING id`,
             [paymentId, merchantId, `ACC-TIMEOUT-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`]
         )).rows[0].id;
@@ -137,6 +138,11 @@ test("pending attempts become TIMEOUT once and late callbacks remain eligible", 
             "DELETE FROM webhook_events WHERE event_key LIKE $1",
             [`mpesa:late-checkout-${suffix}%`]
         ).catch(() => {});
+        await pool.query(
+            "DELETE FROM notifications WHERE user_id = (SELECT user_id FROM merchants WHERE id = $1)",
+            [merchantId]
+        ).catch(() => {});
+        await pool.query("DELETE FROM audit_logs WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM provider_transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM transactions WHERE merchant_id = $1", [merchantId]).catch(() => {});
         await pool.query("DELETE FROM payments WHERE merchant_id = $1", [merchantId]).catch(() => {});

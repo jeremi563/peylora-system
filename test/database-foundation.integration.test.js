@@ -149,6 +149,12 @@ test("financial foundation protects provider, allocation, credit, and unassigned
         assert.equal(beforeEvidence.rows[0].count, 0);
 
         const transactionService = await import("../src/services/transaction.service.js");
+        await pool.query(
+            `UPDATE transactions
+             SET status = 'FAILED', dispatch_state = 'REJECTED', updated_at = NOW()
+             WHERE id = $1`,
+            [attemptId]
+        );
         const retryAttempt = await transactionService.createPaymentAttempt({
             merchantId,
             paymentId,

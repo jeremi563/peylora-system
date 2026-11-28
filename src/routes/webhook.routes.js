@@ -1,9 +1,20 @@
 import { Router } from "express";
 
-import { getAuditLogs, getWebhookEvents, retryWebhook } from "../controllers/webhook.controller.js";
+import {
+    authorizePaymentAttemptRetry,
+    getAuditLogs,
+    getWebhookEvents,
+    retryWebhook
+} from "../controllers/webhook.controller.js";
 import { authenticateAccessToken, authorizeRoles } from "../middleware/authentication.js";
-import { validateParam, validateQuery } from "../middleware/validate-request.js";
-import { auditLogListSchema, webhookEventIdSchema, webhookListSchema } from "../validators/webhook.schemas.js";
+import { validateParam, validateQuery, validateRequest } from "../middleware/validate-request.js";
+import {
+    auditLogListSchema,
+    paymentAttemptIdSchema,
+    paymentAttemptRecoverySchema,
+    webhookEventIdSchema,
+    webhookListSchema
+} from "../validators/webhook.schemas.js";
 
 const router = Router();
 const adminAccess = [authenticateAccessToken, authorizeRoles("ADMIN")];
@@ -14,6 +25,13 @@ router.post(
     ...adminAccess,
     validateParam(webhookEventIdSchema, "eventId"),
     retryWebhook
+);
+router.post(
+    "/api/admin/payment-attempts/:transactionId/recovery-dispositions",
+    ...adminAccess,
+    validateParam(paymentAttemptIdSchema, "transactionId"),
+    validateRequest(paymentAttemptRecoverySchema),
+    authorizePaymentAttemptRetry
 );
 router.get("/api/admin/audit-logs", ...adminAccess, validateQuery(auditLogListSchema), getAuditLogs);
 
