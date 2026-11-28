@@ -115,9 +115,6 @@ CREATE UNIQUE INDEX settlement_lines_source_row_unique
     ON settlement_lines (evidence_import_id, evidence_row_id)
     WHERE evidence_import_id IS NOT NULL
       AND evidence_row_id IS NOT NULL;
-CREATE UNIQUE INDEX settlement_lines_provider_reference_unique
-    ON settlement_lines (merchant_id, provider_reference)
-    WHERE provider_reference IS NOT NULL;
 CREATE INDEX settlement_lines_merchant_batch_idx
     ON settlement_lines (merchant_id, batch_id);
 CREATE INDEX settlement_lines_merchant_status_idx
