@@ -73,8 +73,28 @@ A persisted incoming event from an external provider or other integration that r
 Future outgoing merchant webhook deliveries are separate operational records and delivery processes. Application notifications and general application events are not automatically Webhook Events.
 
 ## Settlement
-
 The movement and availability of collected funds to the Merchant under the provider or banking arrangement. Settlement is a separate concept from provider payment confirmation.
+
+## Settlement Batch
+A provider or source-defined aggregation of settlement lines, with batch-level dates and financial values. A batch is evidence about settlement, not proof that one of its transactions settled until the line and provider evidence agree.
+
+## Settlement Line
+An individual provider transaction or adjustment represented in settlement evidence.
+
+## Settlement Adjustment
+An append-only adjustment or reversal associated with settlement evidence. It is distinct from an allocation reversal and from an actual provider refund.
+
+## Bank Deposit
+A movement of money into a Merchant bank account, identified by bank/deposit evidence such as a deposit reference and value date.
+
+## Settlement Evidence
+An original merchant-authorised source and its parsed representation used to investigate settlement. It preserves provider, settlement and bank values without silently replacing or overwriting earlier evidence.
+
+## Settlement Match
+A merchant-scoped association between settlement evidence and a Provider Transaction, settlement batch or bank deposit.
+
+## Reconciliation Run
+A repeatable reconciliation execution that creates live or historical matching and exception results. A completed run may publish an immutable snapshot without changing the financial ledger.
 
 ## Reconciliation
 
