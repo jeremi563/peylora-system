@@ -2120,6 +2120,21 @@ The date range must not exceed 366 calendar days.
                         description: "Webhook event UUID"
                     }
                 ],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["reason", "supportingEvidence"],
+                                properties: {
+                                    reason: { type: "string", minLength: 8, maxLength: 1000 },
+                                    supportingEvidence: { type: "string", minLength: 1, maxLength: 4000 }
+                                }
+                            }
+                        }
+                    }
+                },
                 responses: {
                     200: {
                         description: "Retry enqueued or completed",

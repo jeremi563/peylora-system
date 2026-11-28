@@ -32,6 +32,13 @@ async function processBatch() {
                 attempts: job.attempts,
                 error: error.message
             });
+            if (job.attempts >= maxAttempts) {
+                console.error("Notification work exhausted retry budget:", {
+                    notificationId: job.id,
+                    attempts: job.attempts,
+                    alert: "REVIEW_REQUIRED"
+                });
+            }
         }
     }
 }

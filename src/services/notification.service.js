@@ -111,17 +111,24 @@ export async function claimEmailNotifications(limit = 10, leaseSeconds = 300) {
              FROM notifications
              WHERE channel = 'EMAIL'
                AND delivery_status IN ('PENDING', 'PROCESSING')
-               AND next_attempt_at <= NOW()
+               AND (
+                    (delivery_status = 'PENDING' AND next_attempt_at <= NOW())
+                    OR
+                    (delivery_status = 'PROCESSING'
+                     AND claimed_at < NOW() - ($2 * INTERVAL '1 second')
+                     AND next_attempt_at <= NOW())
+               )
              ORDER BY created_at
              LIMIT $1
              FOR UPDATE SKIP LOCKED`,
-            [limit]
+            [limit, leaseSeconds]
         );
         const jobs = [];
         for (const row of selected.rows) {
             const updated = await client.query(
                 `UPDATE notifications
                  SET delivery_status = 'PROCESSING', attempts = attempts + 1,
+                     claimed_at = NOW(),
                      next_attempt_at = NOW() + ($2 * INTERVAL '1 second')
                  WHERE id = $1
                  RETURNING id, recipient_email, subject, body, attempts`,
@@ -142,7 +149,8 @@ export async function claimEmailNotifications(limit = 10, leaseSeconds = 300) {
 export async function markEmailNotificationDelivered(notificationId) {
     await getDatabasePool().query(
         `UPDATE notifications
-         SET delivery_status = 'DELIVERED', sent_at = NOW(), next_attempt_at = NULL, last_error = NULL
+         SET delivery_status = 'DELIVERED', sent_at = NOW(), next_attempt_at = NULL,
+             claimed_at = NULL, last_error = NULL
          WHERE id = $1 AND channel = 'EMAIL'`,
         [notificationId]
     );
@@ -155,7 +163,7 @@ export async function markEmailNotificationFailed(notificationId, attempts, erro
         `UPDATE notifications
          SET delivery_status = $2,
              next_attempt_at = CASE WHEN $2 = 'FAILED' THEN NULL ELSE NOW() + ($3 * INTERVAL '1 second') END,
-             last_error = $4
+             claimed_at = NULL, last_error = $4
          WHERE id = $1 AND channel = 'EMAIL'`,
         [notificationId, terminal ? "FAILED" : "PENDING", retrySeconds, String(errorMessage).slice(0, 1000)]
     );

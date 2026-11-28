@@ -1,4 +1,5 @@
 import {
+    getOperationalSnapshot,
     listAuditLogs,
     listWebhookEvents,
     retryFailedWebhookEvent
@@ -34,7 +35,12 @@ export async function getWebhookEvents(req, res) {
 
 export async function retryWebhook(req, res) {
     try {
-        const event = await retryFailedWebhookEvent(req.params.eventId);
+        const event = await retryFailedWebhookEvent(
+            req.params.eventId,
+            req.auth.userId,
+            req.validatedBody.reason,
+            req.validatedBody.supportingEvidence
+        );
         if (!event) {
             return res.status(404).json({ success: false, message: "Failed webhook event not found" });
         }
@@ -81,6 +87,21 @@ export async function authorizePaymentAttemptRetry(req, res) {
         return res.status(500).json({
             success: false,
             message: "Could not authorize payment attempt retry"
+        });
+    }
+}
+
+export async function getOperations(req, res) {
+    try {
+        return res.json({
+            success: true,
+            operations: await getOperationalSnapshot()
+        });
+    } catch (error) {
+        console.error("Could not retrieve operational snapshot:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Could not retrieve operational snapshot"
         });
     }
 }

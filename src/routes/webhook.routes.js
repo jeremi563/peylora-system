@@ -3,6 +3,7 @@ import { Router } from "express";
 import {
     authorizePaymentAttemptRetry,
     getAuditLogs,
+    getOperations,
     getWebhookEvents,
     retryWebhook
 } from "../controllers/webhook.controller.js";
@@ -12,6 +13,7 @@ import {
     auditLogListSchema,
     paymentAttemptIdSchema,
     paymentAttemptRecoverySchema,
+    webhookRetrySchema,
     webhookEventIdSchema,
     webhookListSchema
 } from "../validators/webhook.schemas.js";
@@ -24,6 +26,7 @@ router.post(
     "/api/admin/webhook-events/:eventId/retry",
     ...adminAccess,
     validateParam(webhookEventIdSchema, "eventId"),
+    validateRequest(webhookRetrySchema),
     retryWebhook
 );
 router.post(
@@ -33,6 +36,7 @@ router.post(
     validateRequest(paymentAttemptRecoverySchema),
     authorizePaymentAttemptRetry
 );
+router.get("/api/admin/operations", ...adminAccess, getOperations);
 router.get("/api/admin/audit-logs", ...adminAccess, validateQuery(auditLogListSchema), getAuditLogs);
 
 export default router;
