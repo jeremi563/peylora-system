@@ -2347,6 +2347,117 @@ The date range must not exceed 366 calendar days.
         },
 
         // ====================================================================
+        // SETTLEMENT DEPOSITS
+        // ====================================================================
+        "/api/settlement/bank-accounts": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List merchant bank accounts",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Merchant bank accounts" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            },
+            post: {
+                tags: ["Settlement"],
+                summary: "Register a merchant bank account alias",
+                security: [{ BearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["accountAlias"],
+                                properties: {
+                                    accountAlias: { type: "string", minLength: 2, maxLength: 100 },
+                                    bankReference: { type: "string", maxLength: 100 },
+                                    accountLast4: { type: "string", pattern: "^\\d{4}$" }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    201: { description: "Bank account registered" },
+                    200: { description: "Bank account already registered" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement/bank-deposits": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List merchant bank deposits",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Merchant bank deposits" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            },
+            post: {
+                tags: ["Settlement"],
+                summary: "Record a manual merchant bank deposit",
+                security: [{ BearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["accountAlias", "depositDate", "depositedAmount"],
+                                properties: {
+                                    accountAlias: { type: "string", minLength: 2, maxLength: 100 },
+                                    bankReference: { type: "string", maxLength: 100 },
+                                    depositDate: { type: "string" },
+                                    valueDate: { type: "string" },
+                                    depositedAmount: { oneOf: [{ type: "number" }, { type: "string" }] },
+                                    evidenceImportId: { type: "string", format: "uuid" },
+                                    evidenceRowId: { type: "string", format: "uuid" }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    201: { description: "Bank deposit recorded" },
+                    200: { description: "Bank deposit already recorded" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement/batch-deposit-reconciliation": {
+            post: {
+                tags: ["Settlement"],
+                summary: "Reconcile a settlement batch to a bank deposit",
+                security: [{ BearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["settlementBatchId", "bankDepositId"],
+                                properties: {
+                                    settlementBatchId: { type: "string", format: "uuid" },
+                                    bankDepositId: { type: "string", format: "uuid" }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    200: { description: "Batch/deposit reconciliation result" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+
+        // ====================================================================
         // ADMIN — AUDIT LOGS
         // ====================================================================
         "/api/admin/audit-logs": {
