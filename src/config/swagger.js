@@ -2458,6 +2458,129 @@ The date range must not exceed 366 calendar days.
         },
 
         // ====================================================================
+        // SETTLEMENT REVIEW
+        // ====================================================================
+        "/api/admin/settlement-exceptions/{exceptionId}/resolve": {
+            post: {
+                tags: ["Settlement", "Admin"],
+                summary: "Resolve a settlement reconciliation exception",
+                description: "Record-only ADMIN resolution. It does not mutate Provider Transactions or financial ledgers.",
+                security: [{ BearerAuth: [] }],
+                parameters: [
+                    {
+                        name: "exceptionId",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", format: "uuid" }
+                    }
+                ],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["merchantId", "resolution", "reason", "supportingEvidence"],
+                                properties: {
+                                    merchantId: { type: "string", format: "uuid" },
+                                    resolution: { type: "string", enum: ["RESOLVED", "DISMISSED"] },
+                                    reason: { type: "string", minLength: 8, maxLength: 1000 },
+                                    supportingEvidence: { type: "string", minLength: 1, maxLength: 4000 }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    200: { description: "Exception resolution recorded" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    404: { $ref: "#/components/responses/NotFound" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/admin/settlement-matches/{matchId}/resolve": {
+            post: {
+                tags: ["Settlement", "Admin"],
+                summary: "Resolve a settlement match",
+                description: "Record-only ADMIN confirmation or dismissal. It does not alter provider or accounting records.",
+                security: [{ BearerAuth: [] }],
+                parameters: [
+                    {
+                        name: "matchId",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", format: "uuid" }
+                    }
+                ],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["merchantId", "resolution", "reason", "supportingEvidence"],
+                                properties: {
+                                    merchantId: { type: "string", format: "uuid" },
+                                    resolution: { type: "string", enum: ["CONFIRMED", "DISMISSED"] },
+                                    reason: { type: "string", minLength: 8, maxLength: 1000 },
+                                    supportingEvidence: { type: "string", minLength: 1, maxLength: 4000 }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    200: { description: "Match resolution recorded" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    404: { $ref: "#/components/responses/NotFound" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/admin/settlement-reconciliation-runs": {
+            post: {
+                tags: ["Settlement", "Admin"],
+                summary: "Create an immutable settlement reconciliation snapshot",
+                security: [{ BearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                required: ["merchantId", "runType"],
+                                properties: {
+                                    merchantId: { type: "string", format: "uuid" },
+                                    runType: {
+                                        type: "string",
+                                        enum: ["PROVIDER_MATCH", "BATCH_DEPOSIT", "FULL_RECONCILIATION"]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    201: { description: "Snapshot and reconciliation run created" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement-reconciliation-runs": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List merchant settlement reconciliation runs",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Merchant reconciliation runs and snapshots" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+
+        // ====================================================================
         // ADMIN — AUDIT LOGS
         // ====================================================================
         "/api/admin/audit-logs": {
