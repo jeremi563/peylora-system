@@ -89,6 +89,15 @@ test("Payment Request fulfillment is cumulative, additive, and blocks further co
             status: "PARTIALLY_FULFILLED",
             amountReceived: 40
         });
+        const excessAttemptId = await createAttempt(cumulativePaymentId, 100);
+        await recordProviderTransaction(excessAttemptId, "SUCCESS", 25);
+        payment = await getMerchantPayment(merchantId, cumulativePaymentId);
+        assert.deepEqual(payment.fulfillment, {
+            status: "PARTIALLY_FULFILLED",
+            amountReceived: 65
+        });
+        const failedAttemptId = await createAttempt(cumulativePaymentId, 100, "FAILED");
+        await recordProviderTransaction(failedAttemptId, "FAILED", null);
 
         const listed = await listMerchantPayments(merchantId, { page: 1, limit: 100 });
         const listedPayment = listed.items.find(({ id }) => id === cumulativePaymentId);
@@ -99,16 +108,12 @@ test("Payment Request fulfillment is cumulative, additive, and blocks further co
         payment = await getMerchantPayment(merchantId, cumulativePaymentId);
         assert.deepEqual(payment.fulfillment, {
             status: "FULFILLED",
-            amountReceived: 100
+            amountReceived: 125
         });
 
         const duplicateEvidence = await recordProviderTransaction(earlierAttemptId, "SUCCESS", 60);
         assert.equal(duplicateEvidence.rowCount, 0);
 
-        const excessAttemptId = await createAttempt(cumulativePaymentId, 100);
-        await recordProviderTransaction(excessAttemptId, "SUCCESS", 25);
-        const failedAttemptId = await createAttempt(cumulativePaymentId, 100, "FAILED");
-        await recordProviderTransaction(failedAttemptId, "FAILED", null);
         payment = await getMerchantPayment(merchantId, cumulativePaymentId);
         assert.deepEqual(payment.fulfillment, {
             status: "FULFILLED",
