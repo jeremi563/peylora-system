@@ -33,6 +33,13 @@ export class UnresolvedPaymentAttemptError extends Error {
     }
 }
 
+export class PaymentLinkUnavailableError extends Error {
+    constructor() {
+        super("The payment link is unavailable");
+        this.name = "PaymentLinkUnavailableError";
+    }
+}
+
 export class RecoveryDispositionConflictError extends Error {
     constructor() {
         super("A different recovery disposition already exists for this payment attempt");
@@ -54,7 +61,18 @@ const PAYMENT_FULFILLMENT_JOIN = `
         JOIN provider_transactions pt
           ON pt.attempt_transaction_id = payment_attempt.id
          AND pt.merchant_id = payment_attempt.merchant_id
-        WHERE payment_attempt.payment_id = p.id
+        WHERE (
+            payment_attempt.payment_id = p.id
+            OR (
+                p.payment_link_id IS NOT NULL
+                AND payment_attempt.payment_id IN (
+                    SELECT historical_payment.id
+                    FROM payments historical_payment
+                    WHERE historical_payment.payment_link_id = p.payment_link_id
+                      AND historical_payment.merchant_id = p.merchant_id
+                )
+            )
+        )
           AND payment_attempt.merchant_id = p.merchant_id
           AND pt.outcome = 'SUCCESS'
     ) payment_fulfillment ON true
@@ -437,6 +455,36 @@ export async function createPaymentAttempt({
             return null;
         }
 
+        await client.query(
+            `UPDATE payments
+             SET phone_number = $2, updated_at = NOW()
+             WHERE id = $1 AND merchant_id = $3`,
+            [paymentId, phoneNumber, merchantId]
+        );
+
+        const boundLinkId = payment.rows[0].payment_link_id ?? paymentLinkId;
+        if (boundLinkId) {
+            const link = await client.query(
+                `SELECT id, status, use_mode, expires_at, consumed_at
+                 FROM payment_links
+                 WHERE id = $1 AND merchant_id = $2
+                 FOR UPDATE`,
+                [boundLinkId, merchantId]
+            );
+            if (
+                !link.rowCount
+                || link.rows[0].status !== "ACTIVE"
+                || link.rows[0].consumed_at
+                || (
+                    link.rows[0].expires_at
+                    && new Date(link.rows[0].expires_at).getTime() <= Date.now()
+                )
+            ) {
+                await client.query("ROLLBACK");
+                throw new PaymentLinkUnavailableError();
+            }
+        }
+
         const requestHash = hashRetryRequest({
             paymentId,
             amount: requestedAmount,
@@ -466,7 +514,18 @@ export async function createPaymentAttempt({
             `SELECT COALESCE(SUM(pt.received_amount), 0) >= p.amount AS is_fulfilled
              FROM payments p
              LEFT JOIN transactions payment_attempt
-               ON payment_attempt.payment_id = p.id
+               ON (
+                   payment_attempt.payment_id = p.id
+                   OR (
+                       p.payment_link_id IS NOT NULL
+                       AND payment_attempt.payment_id IN (
+                           SELECT historical_payment.id
+                           FROM payments historical_payment
+                           WHERE historical_payment.payment_link_id = p.payment_link_id
+                             AND historical_payment.merchant_id = p.merchant_id
+                       )
+                   )
+               )
               AND payment_attempt.merchant_id = p.merchant_id
              LEFT JOIN provider_transactions pt
                ON pt.attempt_transaction_id = payment_attempt.id
@@ -520,6 +579,29 @@ export async function createPaymentAttempt({
              VALUES ($1, $2, $3, $4, 'KES', $5, 'MPESA', 'PENDING', $6)
              RETURNING id, payment_id, amount, status, created_at`,
             [paymentId, merchantId, accountReference, requestedAmount, phoneNumber, recoveryDispositionId]
+        );
+        const merchant = await client.query(
+            "SELECT user_id FROM merchants WHERE id = $1",
+            [merchantId]
+        );
+        await client.query(
+            `INSERT INTO audit_logs (
+                user_id, merchant_id, action, entity_type, entity_id, details, event_key
+             )
+             VALUES ($1, $2, 'PAYMENT_CREATED', 'PAYMENT', $3, $4, $5)
+             ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+            [
+                merchant.rows[0]?.user_id ?? null,
+                merchantId,
+                paymentId,
+                JSON.stringify({
+                    attemptId: attempt.rows[0].id,
+                    reference: accountReference,
+                    amount: Number(attempt.rows[0].amount),
+                    currency: "KES"
+                }),
+                `payment-created:${paymentId}`
+            ]
         );
 
         await client.query(
@@ -805,6 +887,11 @@ async function applyTerminalStatusQuery(client, transaction, response, verificat
                 receivedAmount,
                 paymentId: update.rows[0].payment_id
             });
+            await consumeSingleUsePaymentLink(
+                client,
+                transaction,
+                `payment-link-consumed:${transaction.checkout_request_id}`
+            );
             if (amountMatches === true) {
                 await client.query(
                     `UPDATE payment_links
@@ -887,20 +974,32 @@ export async function recordReconciliationResponse(transactionId, merchantId, re
                     t.result_code, t.checkout_request_id, t.merchant_request_id,
                     t.callback_metadata, t.paid_amount, t.mpesa_receipt_number,
                     t.paid_from_phone_number, t.provider_transaction_date,
-                    p.reference, m.user_id AS owner_user_id, m.business_name,
+                    p.reference, p.payment_link_id, m.user_id AS owner_user_id, m.business_name,
                     u.email AS owner_email
              FROM transactions t
              JOIN payments p ON p.id = t.payment_id
              LEFT JOIN merchants m ON m.id = t.merchant_id
              LEFT JOIN users u ON u.id = m.user_id
              WHERE t.id = $1 AND t.merchant_id = $2
-             FOR UPDATE OF t`,
+             `,
             [transactionId, merchantId]
         );
         if (!transaction.rowCount) {
             await client.query("ROLLBACK");
             return false;
         }
+        await client.query(
+            `SELECT id FROM payments
+             WHERE id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [transaction.rows[0].payment_id, merchantId]
+        );
+        await client.query(
+            `SELECT id FROM transactions
+             WHERE id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [transactionId, merchantId]
+        );
 
         const providerTransaction = await client.query(
             `SELECT evidence_payload, received_amount, provider_reference
@@ -1650,6 +1749,50 @@ async function markCallbackEventProcessed(client, eventId) {
     );
 }
 
+async function consumeSingleUsePaymentLink(client, transaction, eventKey) {
+    if (!transaction.payment_link_id) return false;
+    const link = await client.query(
+        `SELECT id, use_mode, status
+         FROM payment_links
+         WHERE id = $1 AND merchant_id = $2
+         FOR UPDATE`,
+        [transaction.payment_link_id, transaction.merchant_id]
+    );
+    if (
+        !link.rowCount
+        || link.rows[0].use_mode !== "SINGLE_USE"
+        || link.rows[0].status !== "ACTIVE"
+    ) {
+        return false;
+    }
+    await client.query(
+        `UPDATE payment_links
+         SET status = 'INACTIVE', consumed_at = COALESCE(consumed_at, NOW()), updated_at = NOW()
+         WHERE id = $1 AND merchant_id = $2 AND status = 'ACTIVE'
+         RETURNING id`,
+        [transaction.payment_link_id, transaction.merchant_id]
+    );
+    await client.query(
+        `INSERT INTO audit_logs (
+            user_id, merchant_id, action, entity_type, entity_id, details, event_key
+         )
+         VALUES ($1, $2, 'PAYMENT_LINK_CONSUMED', 'PAYMENT_LINK', $3, $4, $5)
+         ON CONFLICT (event_key) WHERE event_key IS NOT NULL DO NOTHING`,
+        [
+            transaction.owner_user_id,
+            transaction.merchant_id,
+            link.rows[0].id,
+            JSON.stringify({
+                paymentRequestId: transaction.payment_id,
+                paymentAttemptId: transaction.id,
+                useMode: "SINGLE_USE"
+            }),
+            eventKey
+        ]
+    );
+    return true;
+}
+
 async function updateTransactionFromCallback(client, transaction, callback, metadata) {
     const resultCode = parseResultCode(callback.ResultCode);
     if (resultCode === null) {
@@ -1714,6 +1857,11 @@ async function updateTransactionFromCallback(client, transaction, callback, meta
             receivedAmount: outcome.paidAmount,
             paymentId: update.rows[0].payment_id
         });
+        await consumeSingleUsePaymentLink(
+            client,
+            transaction,
+            `payment-link-consumed:${callback.CheckoutRequestID}`
+        );
     }
 
     await client.query(
@@ -1841,14 +1989,13 @@ export async function applyMpesaCallback(callback, metadata, eventContext = {}) 
         const existing = await client.query(
             `SELECT t.id, t.payment_id, t.status, t.merchant_id, t.checkout_request_id,
                     t.merchant_request_id, t.result_code, t.callback_metadata,
-                    p.amount, p.reference,
+                    p.amount, p.reference, p.payment_link_id,
                     m.user_id AS owner_user_id, m.business_name, u.email AS owner_email
              FROM transactions t
              JOIN payments p ON p.id = t.payment_id
              LEFT JOIN merchants m ON m.id = t.merchant_id
              LEFT JOIN users u ON u.id = m.user_id
-             WHERE t.checkout_request_id = $1
-             FOR UPDATE OF t`,
+             WHERE t.checkout_request_id = $1`,
             [checkoutRequestId]
         );
 
@@ -1875,6 +2022,18 @@ export async function applyMpesaCallback(callback, metadata, eventContext = {}) 
         }
 
         const transaction = existing.rows[0];
+        await client.query(
+            `SELECT id FROM payments
+             WHERE id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [transaction.payment_id, transaction.merchant_id]
+        );
+        await client.query(
+            `SELECT id FROM transactions
+             WHERE id = $1 AND merchant_id = $2
+             FOR UPDATE`,
+            [transaction.id, transaction.merchant_id]
+        );
         let verification = statusQueryError
             ? {
                 agreement: "UNVERIFIED",

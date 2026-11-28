@@ -303,9 +303,9 @@ test("payment initiation and retries are idempotent across legacy and versioned 
                 "DELETE FROM payment_idempotency_operations WHERE merchant_id = $1",
                 [merchantId]
             );
+            await pool.query("DELETE FROM payment_links WHERE merchant_id = $1", [merchantId]);
             await pool.query("DELETE FROM transactions WHERE merchant_id = $1", [merchantId]);
             await pool.query("DELETE FROM payments WHERE merchant_id = $1", [merchantId]);
-            await pool.query("DELETE FROM payment_links WHERE merchant_id = $1", [merchantId]);
             await pool.query("DELETE FROM audit_logs WHERE merchant_id = $1", [merchantId]);
             await pool.query("DELETE FROM merchants WHERE id = $1", [merchantId]);
         }

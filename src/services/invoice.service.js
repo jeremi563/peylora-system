@@ -244,7 +244,8 @@ export async function createInvoicePaymentLink(merchantId, invoiceId) {
         }
 
         const existing = await client.query(
-            `SELECT id, reference, description, amount, currency, status, expires_at, created_at
+            `SELECT id, reference, description, amount, currency, status,
+                    use_mode, payment_id, expires_at, created_at
              FROM payment_links
              WHERE invoice_id = $1 AND merchant_id = $2 AND status = 'ACTIVE'
                AND (expires_at IS NULL OR expires_at > NOW())
@@ -256,11 +257,43 @@ export async function createInvoicePaymentLink(merchantId, invoiceId) {
             return { ...existing.rows[0], amount: Number(existing.rows[0].amount), reused: true };
         }
 
+        const payment = await client.query(
+            `INSERT INTO payments (
+                merchant_id, invoice_id, reference, amount, currency,
+                phone_number, description, status
+             )
+             VALUES ($1, $2, $3, $4, 'KES', '254700000000', $5, 'PENDING')
+             RETURNING id`,
+            [
+                merchantId,
+                invoiceId,
+                `PAY-LINK-${randomBytes(12).toString("base64url")}`,
+                invoice.rows[0].total_amount,
+                `Invoice ${invoice.rows[0].invoice_number}`
+            ]
+        );
         const link = await client.query(
-            `INSERT INTO payment_links (merchant_id, invoice_id, reference, description, amount)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, reference, description, amount, currency, status, expires_at, created_at`,
-            [merchantId, invoiceId, reference, `Invoice ${invoice.rows[0].invoice_number}`, invoice.rows[0].total_amount]
+            `INSERT INTO payment_links (
+                merchant_id, invoice_id, payment_id, reference, description,
+                amount, currency, use_mode
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, 'KES', 'REUSABLE')
+             RETURNING id, reference, description, amount, currency, status,
+                       use_mode, payment_id, expires_at, created_at`,
+            [
+                merchantId,
+                invoiceId,
+                payment.rows[0].id,
+                reference,
+                `Invoice ${invoice.rows[0].invoice_number}`,
+                invoice.rows[0].total_amount
+            ]
+        );
+        await client.query(
+            `UPDATE payments
+             SET payment_link_id = $2, updated_at = NOW()
+             WHERE id = $1 AND merchant_id = $3`,
+            [payment.rows[0].id, link.rows[0].id, merchantId]
         );
 
         if (invoice.rows[0].status === "DRAFT") {

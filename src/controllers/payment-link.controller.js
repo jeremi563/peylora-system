@@ -69,6 +69,8 @@ export async function getPublicLink(req, res) {
                 description: link.description,
                 amount: link.amount,
                 currency: link.currency,
+                useMode: link.use_mode,
+                paymentId: link.payment_id,
                 expiresAt: link.expires_at
             }
         });
