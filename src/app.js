@@ -14,6 +14,7 @@ import webhookRoutes from "./routes/webhook.routes.js";
 import accountingRoutes from "./routes/accounting.routes.js";
 import settlementEvidenceRoutes from "./routes/settlement-evidence.routes.js";
 import settlementMatchingRoutes from "./routes/settlement-matching.routes.js";
+import settlementDepositRoutes from "./routes/settlement-deposit.routes.js";
 import {
 	apiErrorHandler,
 	apiRateLimit,
@@ -76,6 +77,7 @@ app.use(webhookRoutes);
 app.use(accountingRoutes);
 app.use(settlementEvidenceRoutes);
 app.use(settlementMatchingRoutes);
+app.use(settlementDepositRoutes);
 app.use(mpesaRoutes);
 app.use(healthRoutes);
 app.use(docsRoutes);
