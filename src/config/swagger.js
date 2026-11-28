@@ -404,6 +404,12 @@ All protected endpoints require a **Bearer token** (JWT access token) obtained f
                 properties: {
                     description: { type: "string", minLength: 1, maxLength: 500, example: "Website development payment" },
                     amount: { type: "integer", minimum: 1, maximum: 250000, example: 5000 },
+                    useMode: {
+                        type: "string",
+                        enum: ["SINGLE_USE", "REUSABLE"],
+                        default: "REUSABLE",
+                        description: "Whether a successful provider payment consumes the link"
+                    },
                     expiresAt: {
                         type: "string",
                         format: "date-time",
@@ -422,6 +428,9 @@ All protected endpoints require a **Bearer token** (JWT access token) obtained f
                     amount: { type: "integer", example: 5000 },
                     currency: { type: "string", example: "KES" },
                     isActive: { type: "boolean", example: true },
+                    useMode: { type: "string", enum: ["SINGLE_USE", "REUSABLE"], example: "REUSABLE" },
+                    paymentId: { type: "string", format: "uuid" },
+                    consumedAt: { type: "string", format: "date-time", nullable: true },
                     expiresAt: { type: "string", format: "date-time", nullable: true },
                     payUrl: { type: "string", example: "https://example.com/pay/plink_A1B2C3D4E5F6G7H8I9J0" },
                     createdAt: { type: "string", format: "date-time" }
@@ -434,7 +443,9 @@ All protected endpoints require a **Bearer token** (JWT access token) obtained f
                     description: { type: "string", example: "Website development payment" },
                     amount: { type: "integer", example: 5000 },
                     currency: { type: "string", example: "KES" },
-                    isActive: { type: "boolean", example: true }
+                    isActive: { type: "boolean", example: true },
+                    useMode: { type: "string", enum: ["SINGLE_USE", "REUSABLE"], example: "REUSABLE" },
+                    paymentId: { type: "string", format: "uuid" }
                 }
             },
             PayPublicLinkRequest: {

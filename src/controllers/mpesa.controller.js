@@ -23,6 +23,7 @@ import {
     markReconciliationRequested,
     IdempotencyConflictError,
     PaymentRequestFulfilledError,
+    PaymentLinkUnavailableError,
     UnresolvedPaymentAttemptError,
     listReconciliationEvents,
     recordReconciliationResponse,
@@ -222,6 +223,9 @@ async function initiatePayment(req, res, {
         if (error instanceof PaymentRequestFulfilledError) {
             return res.status(409).json({ message: error.message });
         }
+        if (error instanceof PaymentLinkUnavailableError) {
+            return res.status(409).json({ message: error.message });
+        }
         if (error instanceof UnresolvedPaymentAttemptError) {
             return res.status(409).json({ message: error.message });
         }
@@ -277,6 +281,7 @@ export function initiatePaymentLinkPayment(req, res, link) {
         description: link.description,
         paymentLinkId: link.id,
         invoiceId: link.invoice_id,
+        existingPaymentId: link.payment_id,
         idempotencyKey: idempotency.key ? `link:${link.id}:${idempotency.key}` : null
     });
 }

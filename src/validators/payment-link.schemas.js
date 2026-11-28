@@ -3,7 +3,8 @@ import { z } from "zod";
 export const createPaymentLinkSchema = z.object({
     description: z.string().trim().min(1).max(500),
     amount: z.number().int().positive().max(250_000),
-    expiresAt: z.string().datetime({ offset: true }).optional()
+    expiresAt: z.string().datetime({ offset: true }).optional(),
+    useMode: z.enum(["SINGLE_USE", "REUSABLE"]).default("REUSABLE")
 });
 
 export const paymentLinkReferenceSchema = z.string().regex(/^[A-Za-z0-9_-]{20,64}$/);

@@ -400,6 +400,7 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
                 [eventKey, conflictingEventKey]
             );
         }
+        if (paymentLinkId) await pool.query("DELETE FROM payment_links WHERE id = $1", [paymentLinkId]);
         if (paymentId) {
             await pool.query("DELETE FROM audit_logs WHERE event_key = $1", [`payment-created:${paymentId}`]);
             await pool.query("DELETE FROM reconciliation_events WHERE transaction_id IN (SELECT id FROM transactions WHERE payment_id = $1)", [paymentId]);
@@ -452,7 +453,6 @@ test("merchant payment flows through link, Daraja callback, webhook, notificatio
             await pool.query("DELETE FROM transactions WHERE payment_id = $1", [partialPaymentId]);
             await pool.query("DELETE FROM payments WHERE id = $1", [partialPaymentId]);
         }
-        if (paymentLinkId) await pool.query("DELETE FROM payment_links WHERE id = $1", [paymentLinkId]);
         if (merchantId) await pool.query("DELETE FROM customers WHERE merchant_id = $1", [merchantId]);
         if (merchantId) await pool.query("DELETE FROM merchants WHERE id = $1", [merchantId]);
         await pool.query("DELETE FROM users WHERE email = $1", [email]);
