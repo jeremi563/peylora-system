@@ -15,6 +15,7 @@ import accountingRoutes from "./routes/accounting.routes.js";
 import settlementEvidenceRoutes from "./routes/settlement-evidence.routes.js";
 import settlementMatchingRoutes from "./routes/settlement-matching.routes.js";
 import settlementDepositRoutes from "./routes/settlement-deposit.routes.js";
+import settlementReviewRoutes from "./routes/settlement-review.routes.js";
 import {
 	apiErrorHandler,
 	apiRateLimit,
@@ -78,6 +79,7 @@ app.use(accountingRoutes);
 app.use(settlementEvidenceRoutes);
 app.use(settlementMatchingRoutes);
 app.use(settlementDepositRoutes);
+app.use(settlementReviewRoutes);
 app.use(mpesaRoutes);
 app.use(healthRoutes);
 app.use(docsRoutes);
