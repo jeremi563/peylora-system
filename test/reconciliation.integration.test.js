@@ -209,6 +209,12 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
         assert.ok(manualConflict.response_payload.verification.conflictFields.includes("amount"));
         assert.ok(manualConflict.response_payload.verification.conflictFields.includes("receipt"));
 
+        const incompletePaymentId = (await pool.query(
+            `INSERT INTO payments (merchant_id, reference, amount, phone_number, status)
+             VALUES ($1, $2, 100, $3, 'PENDING')
+             RETURNING id`,
+            [merchantId, `PAY-MISSING-AMOUNT-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`]
+        )).rows[0].id;
         incompleteAttemptId = (await pool.query(
             `INSERT INTO transactions (
                 payment_id, merchant_id, account_reference, amount,
@@ -216,7 +222,7 @@ test("reconciliation evidence is append-only and merchant-scoped", async () => {
              )
              VALUES ($1, $2, $3, 100, 'KES', $4, 'MPESA', 'PENDING')
              RETURNING id`,
-            [paymentId, merchantId, `ACC-MISSING-AMOUNT-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`]
+            [incompletePaymentId, merchantId, `ACC-MISSING-AMOUNT-${suffix}`, `254700${suffix.replace(/-/g, "").slice(0, 6)}`]
         )).rows[0].id;
         const incompleteCallback = {
             CheckoutRequestID: `CHECKOUT-MISSING-${suffix}`,

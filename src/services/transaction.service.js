@@ -40,6 +40,13 @@ export class PaymentLinkUnavailableError extends Error {
     }
 }
 
+export class PaymentAdmissionConflictError extends Error {
+    constructor(message = "The payment request or link admission is not available") {
+        super(message);
+        this.name = "PaymentAdmissionConflictError";
+    }
+}
+
 export class RecoveryDispositionConflictError extends Error {
     constructor() {
         super("A different recovery disposition already exists for this payment attempt");
@@ -397,6 +404,22 @@ export async function createPendingTransaction({
         };
     } catch (error) {
         await client.query("ROLLBACK");
+        if (error.code === "23505") {
+            throw new UnresolvedPaymentAttemptError();
+        }
+        if (
+            error.message?.includes("UNRESOLVED_PAYMENT_ATTEMPT")
+            || error.message?.includes("PAYMENT_REQUEST_FULFILLED")
+            || error.message?.includes("PAYMENT_LINK_UNAVAILABLE")
+        ) {
+            if (error.message.includes("UNRESOLVED_PAYMENT_ATTEMPT")) {
+                throw new UnresolvedPaymentAttemptError();
+            }
+            if (error.message.includes("PAYMENT_REQUEST_FULFILLED")) {
+                throw new PaymentRequestFulfilledError();
+            }
+            throw new PaymentLinkUnavailableError();
+        }
         throw error;
     } finally {
         client.release();
@@ -461,29 +484,6 @@ export async function createPaymentAttempt({
              WHERE id = $1 AND merchant_id = $3`,
             [paymentId, phoneNumber, merchantId]
         );
-
-        const boundLinkId = payment.rows[0].payment_link_id ?? paymentLinkId;
-        if (boundLinkId) {
-            const link = await client.query(
-                `SELECT id, status, use_mode, expires_at, consumed_at
-                 FROM payment_links
-                 WHERE id = $1 AND merchant_id = $2
-                 FOR UPDATE`,
-                [boundLinkId, merchantId]
-            );
-            if (
-                !link.rowCount
-                || link.rows[0].status !== "ACTIVE"
-                || link.rows[0].consumed_at
-                || (
-                    link.rows[0].expires_at
-                    && new Date(link.rows[0].expires_at).getTime() <= Date.now()
-                )
-            ) {
-                await client.query("ROLLBACK");
-                throw new PaymentLinkUnavailableError();
-            }
-        }
 
         const requestHash = hashRetryRequest({
             paymentId,
@@ -568,6 +568,28 @@ export async function createPaymentAttempt({
                 recoveryDispositionId = recovery.rows[0].id;
             } else if (!["SUCCESS", "FAILED", "CANCELLED"].includes(previous.status)) {
                 throw new UnresolvedPaymentAttemptError();
+            }
+        }
+
+        const boundLinkId = payment.rows[0].payment_link_id ?? paymentLinkId;
+        if (boundLinkId) {
+            const link = await client.query(
+                `SELECT id, status, use_mode, expires_at, consumed_at
+                 FROM payment_links
+                 WHERE id = $1 AND merchant_id = $2
+                 FOR UPDATE`,
+                [boundLinkId, merchantId]
+            );
+            if (
+                !link.rowCount
+                || link.rows[0].status !== "ACTIVE"
+                || link.rows[0].consumed_at
+                || (
+                    link.rows[0].expires_at
+                    && new Date(link.rows[0].expires_at).getTime() <= Date.now()
+                )
+            ) {
+                throw new PaymentLinkUnavailableError();
             }
         }
 
@@ -658,6 +680,18 @@ export async function createPaymentAttempt({
         };
     } catch (error) {
         await client.query("ROLLBACK");
+        if (error.code === "23505") {
+            throw new UnresolvedPaymentAttemptError();
+        }
+        if (error.message?.includes("UNRESOLVED_PAYMENT_ATTEMPT")) {
+            throw new UnresolvedPaymentAttemptError();
+        }
+        if (error.message?.includes("PAYMENT_REQUEST_FULFILLED")) {
+            throw new PaymentRequestFulfilledError();
+        }
+        if (error.message?.includes("PAYMENT_LINK_UNAVAILABLE")) {
+            throw new PaymentLinkUnavailableError();
+        }
         throw error;
     } finally {
         client.release();
