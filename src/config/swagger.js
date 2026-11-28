@@ -2294,6 +2294,59 @@ The date range must not exceed 366 calendar days.
         },
 
         // ====================================================================
+        // SETTLEMENT MATCHING
+        // ====================================================================
+        "/api/settlement-matching/run": {
+            post: {
+                tags: ["Settlement"],
+                summary: "Run settlement-to-provider matching",
+                description: "Matches settlement lines to existing Provider Transactions. It does not mutate financial ledger records.",
+                security: [{ BearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                properties: {
+                                    importId: { type: "string", format: "uuid" },
+                                    lineId: { type: "string", format: "uuid" }
+                                }
+                            }
+                        }
+                    }
+                },
+                responses: {
+                    200: { description: "Matching results" },
+                    400: { $ref: "#/components/responses/BadRequest" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement-matching/matches": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List settlement matches",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Merchant settlement matches" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+        "/api/settlement-matching/exceptions": {
+            get: {
+                tags: ["Settlement"],
+                summary: "List settlement reconciliation exceptions",
+                security: [{ BearerAuth: [] }],
+                responses: {
+                    200: { description: "Merchant settlement exceptions" },
+                    401: { $ref: "#/components/responses/Unauthorized" }
+                }
+            }
+        },
+
+        // ====================================================================
         // ADMIN — AUDIT LOGS
         // ====================================================================
         "/api/admin/audit-logs": {
